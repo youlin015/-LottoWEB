@@ -1,0 +1,4 @@
+威力彩api:https://api.taiwanlottery.com/TLCAPIWeB/Lottery/SuperLotto638Result?period&month=2023-01&endMonth=2023-01&pageNum=1&pageSize=10
+大樂透api:https://api.taiwanlottery.com/TLCAPIWeB/Lottery/Lotto649Result?period&month=2023-01&endMonth=2023-01&pageNum=1&pageSize=10
+今彩539api:https://api.taiwanlottery.com/TLCAPIWeB/Lottery/Daily539Result?period&month=2026-01&endMonth=2026-03&pageNum=1&pageSize=200
+API說明 參數:period:開獎期別,month:開始月份,endMonth:結束月份,pageNum:頁碼(一律為1),pageSize:每頁筆數(一律為1000)
