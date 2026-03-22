@@ -7,18 +7,36 @@ import GameDashboard from "./pages/GameDashboard";
 export default function App() {
   return (
     <Router>
-      <div className="min-h-screen bg-slate-900 text-white overflow-hidden relative selection:bg-cyan-500/30">
+      <div className="min-h-screen bg-slate-900 text-white overflow-hidden relative selection:bg-cyan-500/30 flex flex-col">
         <BackgroundEffects />
+        <DisclaimerBanner />
         <Header />
         
-        <main className="relative z-10 container mx-auto px-4 py-8 h-full">
+        <main className="relative z-10 container mx-auto px-4 py-8 flex-1">
           <Routes>
             <Route path="/" element={<Lobby />} />
             <Route path="/game/:gameId" element={<GameDashboard />} />
           </Routes>
         </main>
+
+        <FeedbackButton />
       </div>
     </Router>
+  );
+}
+
+// 頂端全局免責聲明 (為符合 Google AdSense 放行標準設計)
+function DisclaimerBanner() {
+  return (
+    <div className="relative z-30 bg-rose-950/40 text-rose-200/80 text-[10px] md:text-sm text-center py-2 px-2 md:px-4 border-b border-rose-900/50 w-full flex items-center justify-center">
+      <div className="max-w-7xl mx-auto flex items-center gap-2">
+        <span className="text-rose-500 font-black animate-pulse">⚠️</span>
+        <span className="tracking-wide">
+          <strong className="text-rose-400 mr-2">免責聲明：</strong>
+          本站僅提供歷史數據分析與演算法引擎，非官方投注平台。購買彩券敬請量力而為，未滿 18 歲不得購買及兌領。
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -67,5 +85,22 @@ function BackgroundEffects() {
       <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-cyan-500/10 rounded-full blur-[120px] mix-blend-screen" />
       <div className="absolute bottom-1/4 right-1/4 w-[500px] h-[500px] bg-indigo-500/10 rounded-full blur-[150px] mix-blend-screen" />
     </div>
+  );
+}
+
+// 收集用戶回饋浮動按鈕 (方案A)
+function FeedbackButton() {
+  return (
+    <motion.a
+      href="https://docs.google.com/forms/d/e/1FAIpQLSchmQ8p3XkpfTn84rPevqmFRZn22lTircAZeqwX9C9P4Vw2rw/viewform"
+      target="_blank"
+      rel="noopener noreferrer"
+      whileHover={{ scale: 1.1, rotate: 5 }}
+      whileTap={{ scale: 0.9 }}
+      className="fixed bottom-8 right-8 z-50 flex items-center justify-center gap-2 bg-gradient-to-r from-rose-500 to-pink-600 text-white px-6 py-3 rounded-full font-bold shadow-[0_0_20px_rgba(225,29,72,0.5)] hover:shadow-[0_0_30px_rgba(225,29,72,0.8)] transition-all cursor-pointer"
+    >
+      <span className="text-xl">💬</span>
+      <span>給我們建議</span>
+    </motion.a>
   );
 }

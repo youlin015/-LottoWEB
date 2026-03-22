@@ -7,7 +7,8 @@ import ReactECharts from 'echarts-for-react';
 const TABS = [
   { id: 'stats', label: '📊 數據統計圖表' },
   { id: 'ai', label: '🔮 AI 推薦號碼' },
-  { id: 'filter', label: '🎯 自訂號碼篩選器' }
+  { id: 'filter', label: '🎯 自訂號碼篩選器' },
+  { id: 'history', label: '📅 歷史中獎查詢' }
 ];
 
 const QUICK_GAMES = [
@@ -213,6 +214,7 @@ export default function GameDashboard() {
             {activeTab === 'stats' && data && <StatsTab key="stats" data={data} />}
             {activeTab === 'ai' && data && <AITab key="ai" data={data} />}
             {activeTab === 'filter' && data && <FilterTab key="filter" data={data} onApply={fetchData} />}
+            {activeTab === 'history' && <HistoryTab key="history" gameId={gameId} />}
           </AnimatePresence>
         )}
       </div>
@@ -467,6 +469,91 @@ function FilterTab({ data, onApply }) {
           </div>
         </div>
       </div>
+    </motion.div>
+  );
+}
+
+function HistoryTab({ gameId }) {
+  const [historyDocs, setHistoryDocs] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [searchMonth, setSearchMonth] = useState('');
+
+  const fetchHistory = (month = '') => {
+    setLoading(true);
+    fetch(`http://127.0.0.1:8000/api/history/${gameId}?month=${month}`)
+      .then(res => res.json())
+      .then(d => {
+        setHistoryDocs(d.data || []);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    // 進入時自動抓取最新歷史資料
+    fetchHistory('');
+  }, [gameId]);
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full overflow-y-auto pr-4 pb-12 w-full">
+       <div className="flex flex-col sm:flex-row items-center justify-between mb-8 gap-4 bg-slate-800/60 p-6 rounded-2xl border border-cyan-500/30">
+         <h3 className="text-xl font-bold text-cyan-400">📅 指定單月歷史查詢</h3>
+         <div className="flex items-center gap-3">
+           <input 
+             type="month" 
+             value={searchMonth} 
+             onChange={e => setSearchMonth(e.target.value)} 
+             className="bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 outline-none focus:border-cyan-500 transition-colors" 
+           />
+           <button 
+             onClick={() => fetchHistory(searchMonth)} 
+             className="bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 px-6 py-2 rounded-lg font-bold transition-all shadow-lg active:scale-95"
+           >
+             查詢
+           </button>
+         </div>
+       </div>
+
+       {loading ? (
+         <div className="flex justify-center items-center h-48">
+           <div className="w-12 h-12 border-4 border-slate-700 border-t-cyan-400 rounded-full animate-spin"></div>
+         </div>
+       ) : historyDocs.length === 0 ? (
+         <div className="text-center py-20 text-slate-500 font-medium bg-slate-800/20 rounded-2xl border border-dashed border-slate-700">該月份查無開獎資料</div>
+       ) : (
+         <div className="grid grid-cols-1 gap-4">
+           {historyDocs.map((doc, idx) => (
+              <div key={idx} className="bg-slate-800/40 p-5 rounded-xl border border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-slate-800/60 transition-colors">
+                
+                <div className="flex flex-col gap-1 w-full md:w-32">
+                   <div className="text-cyan-400 font-black tracking-wider">{doc.period} 期</div>
+                   <div className="text-slate-400 text-sm font-mono">{doc.date}</div>
+                </div>
+                
+                <div className="flex-1 flex gap-2 flex-wrap items-center">
+                   {doc.numbers.map(n => (
+                     <span key={n} className="w-10 h-10 rounded-full bg-slate-700/80 flex items-center justify-center font-bold text-base shadow-inner border border-white/5">{String(n).padStart(2, '0')}</span>
+                   ))}
+                   {doc.special !== null && (
+                     <span className="w-10 h-10 ml-2 rounded-full bg-gradient-to-b from-rose-500 to-rose-700 text-white border border-rose-400/50 flex items-center justify-center font-bold text-base shadow-[0_0_15px_rgba(225,29,72,0.4)]">
+                       {String(doc.special).padStart(2, '0')}
+                     </span>
+                   )}
+                </div>
+
+                <div className="w-full md:w-auto flex justify-start md:justify-end mt-2 md:mt-0">
+                   {doc.oddCount > doc.evenCount ? (
+                     <span className="px-4 py-1.5 rounded-full text-sm font-bold bg-rose-500/10 text-rose-400 border border-rose-500/30">奇數偏多 ({doc.oddCount}:{doc.evenCount})</span>
+                   ) : doc.evenCount > doc.oddCount ? (
+                     <span className="px-4 py-1.5 rounded-full text-sm font-bold bg-blue-500/10 text-blue-400 border border-blue-500/30">偶數偏多 ({doc.oddCount}:{doc.evenCount})</span>
+                   ) : (
+                     <span className="px-4 py-1.5 rounded-full text-sm font-bold bg-slate-700 text-slate-300 border border-slate-500/50">奇偶均衡 ({doc.oddCount}:{doc.evenCount})</span>
+                   )}
+                </div>
+              </div>
+           ))}
+         </div>
+       )}
     </motion.div>
   );
 }

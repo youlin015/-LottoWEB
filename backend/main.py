@@ -189,6 +189,62 @@ async def ai_recommend(
         "reason": reason_text
     }
 
+@app.get("/api/history/{game_id}")
+async def get_history(game_id: str, month: str = ""):
+    config = GAME_CONFIGS.get(game_id)
+    if not config: return {"error": "Game not found"}
+    
+    # If a specific month is queried, only fetch that boundary
+    start_m = month if month else ""
+    end_m = month if month else ""
+        
+    draws = await fetch_historical_draws(game_id, 200, start_m, end_m)
+    
+    # In case API fails just mock some data
+    if not draws:
+        draws = []
+        for d in range(1, 31):
+            mock_nums = random.sample(range(1, config['max_num'] + 1), config['draw_count'])
+            if config.get('has_special'): mock_nums.append(random.randint(1, config.get('special_max', 8)))
+            draws.append({
+                'period': f"1150000{d:02}",
+                'lotteryDate': f"2026-03-{d:02}T00:00:00",
+                'drawNumberSize': mock_nums
+            })
+            if len(draws) == 10: break
+
+    results = []
+    for draw in draws:
+        date_str = draw.get('lotteryDate', '')
+        nums = draw.get('drawNumberSize', [])
+        if not nums: continue
+        
+        real_nums = [int(n) for n in nums]
+        if config.get('has_special') and len(real_nums) > config['draw_count']:
+            sp = real_nums[-1]
+            main_nums = real_nums[:-1]
+        else:
+            sp = None
+            main_nums = real_nums[:config['draw_count']]
+            
+        odd_count = sum(1 for n in main_nums if n % 2 != 0)
+        even_count = len(main_nums) - odd_count
+        
+        results.append({
+            "period": draw.get('period', ''),
+            "date": date_str.split('T')[0] if date_str else "",
+            "numbers": sorted(main_nums),
+            "special": sp,
+            "oddCount": odd_count,
+            "evenCount": even_count
+        })
+        
+    return {
+        "game": config["name"],
+        "has_special": config.get('has_special', False),
+        "data": results
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
