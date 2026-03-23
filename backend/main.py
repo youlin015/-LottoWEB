@@ -245,6 +245,122 @@ async def get_history(game_id: str, month: str = ""):
         "data": results
     }
 
+@app.get("/api/check_duplicate/{game_id}")
+async def check_duplicate(game_id: str, nums: str = "", special: str = "", start_month: str = "2010-01", end_month: str = ""):
+    config = GAME_CONFIGS.get(game_id)
+    if not config: return {"error": "Game not found"}
+    
+    # fetch potentially huge dataset
+    now = datetime.now()
+    if not end_month: end_month = now.strftime('%Y-%m')
+    draws = await fetch_historical_draws(game_id, 5000, start_month, end_month)
+    
+    target_nums = set(int(x) for x in nums.split(',')) if nums else set()
+    target_sp = int(special) if special else None
+    
+    matches = []
+    
+    for draw in draws:
+        d_nums = draw.get('drawNumberSize', [])
+        if not d_nums: continue
+        
+        real_nums = [int(n) for n in d_nums]
+        if config.get('has_special') and len(real_nums) > config['draw_count']:
+            sp = real_nums[-1]
+            main_nums = set(real_nums[:-1])
+        else:
+            sp = None
+            main_nums = set(real_nums[:config['draw_count']])
+            
+        # If target numbers are a subset of the drawn numbers
+        is_match = True
+        if target_nums and not target_nums.issubset(main_nums):
+            is_match = False
+            
+        if target_sp and config.get('has_special'):
+            if sp != target_sp:
+                is_match = False
+                
+        # Handle case where user searched empty numbers but didn't mean to
+        if not target_nums and not target_sp:
+            is_match = False
+            
+        if is_match:
+            matches.append({
+                "period": draw.get('period'),
+                "date": draw.get('lotteryDate', '').split('T')[0],
+                "numbers": sorted(list(main_nums)),
+                "special": sp
+            })
+            
+    return {
+        "game": config["name"],
+        "total_checked": len(draws),
+        "matches": matches
+    }
+
+@app.get("/api/pattern_analysis/{game_id}")
+async def pattern_analysis(game_id: str, limit: int = 50):
+    config = GAME_CONFIGS.get(game_id)
+    if not config: return {"error": "Game not found"}
+    
+    # Fetch recent data based on limit. Empty start_month defaults to 1 year back, sufficient for limit up to 200+
+    draws = await fetch_historical_draws(game_id, limit, "", "")
+    if not draws: return {"patterns": []}
+    
+    clean_draws = []
+    for d in draws:
+        ns = d.get('drawNumberSize', [])
+        if not ns: continue
+        r = [int(x) for x in ns]
+        if config.get('has_special') and len(r) > config['draw_count']:
+            main_nums = set(r[:-1])
+        else:
+            main_nums = set(r[:config['draw_count']])
+        clean_draws.append(main_nums)
+        
+    patterns = []
+    max_num = config['max_num']
+    
+    # Scan intervals 1 to 4 (Next draw to Skip-3 draws)
+    for interval in range(1, 5):
+        for numA in range(1, max_num + 1):
+            valid_appearances = 0
+            subsequent_counts = Counter()
+            
+            for i in range(interval, len(clean_draws)):
+                if numA in clean_draws[i]:
+                    valid_appearances += 1
+                    future_draw = clean_draws[i - interval]
+                    for numB in future_draw:
+                        subsequent_counts[numB] += 1
+            
+            # Since user wants short term streaks, lower min_appear depending on limit.
+            min_appear = 2 if limit <= 100 else 3
+            
+            if valid_appearances >= min_appear:
+                for numB, b_count in subsequent_counts.items():
+                    hit_rate = b_count / valid_appearances
+                    if hit_rate >= 0.5:  # lowered to 50% minimum to show viable short-term targets
+                        patterns.append({
+                            "trigger": numA,
+                            "target": numB,
+                            "interval": interval,
+                            "appearances": valid_appearances,
+                            "hits": b_count,
+                            "probability": round(hit_rate * 100, 1)
+                        })
+                        
+    # Sort patterns by probability descending, then by sample size (valid_appearances)
+    patterns.sort(key=lambda x: (x['probability'], x['appearances']), reverse=True)
+    
+    # Return top 50 robust patterns
+    return {
+        "game": config["name"],
+        "analyzed_draws": len(clean_draws),
+        "patterns": patterns[:50]
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
