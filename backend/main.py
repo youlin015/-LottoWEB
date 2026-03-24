@@ -16,6 +16,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+@app.get("/healthz")
+async def health_check():
+    return {"status": "ok", "message": "Taiwan Lottery Situation Room API is running healthy!"}
+
 GAMES_URLS = {
     'lotto638': 'https://api.taiwanlottery.com/TLCAPIWeB/Lottery/SuperLotto638Result',
     'lotto649': 'https://api.taiwanlottery.com/TLCAPIWeB/Lottery/Lotto649Result',
