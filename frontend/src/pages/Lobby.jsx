@@ -2,6 +2,7 @@ import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import clsx from 'clsx';
+const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 const GAMES = [
   { id: 'lotto638', name: '威力彩', desc: '最高獎金 充滿奇蹟', gradient: 'from-rose-500 to-orange-500', shadow: 'shadow-orange-500/30', drawDays: [1, 4] },
@@ -38,7 +39,7 @@ export default function Lobby() {
 
   React.useEffect(() => {
     Promise.all(GAMES.map(game => 
-      fetch(`http://127.0.0.1:8000/api/ai_recommend/${game.id}?limit=50`)
+      fetch(`${API_BASE}/api/ai_recommend/${game.id}?limit=50`)
         .then(res => res.json())
         .then(data => ({ id: game.id, data }))
         .catch(() => ({ id: game.id, data: null }))

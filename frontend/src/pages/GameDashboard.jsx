@@ -8,6 +8,8 @@ import 'react-datepicker/dist/react-datepicker.css';
 import zhTW from 'date-fns/locale/zh-TW';
 registerLocale('zh-TW', zhTW);
 
+const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+
 const TABS = [
   { id: 'stats', label: '📊 數據統計圖表' },
   { id: 'ai', label: '🔮 AI 推薦號碼' },
@@ -48,7 +50,7 @@ export default function GameDashboard() {
 
   const fetchData = (filters = null) => {
     setLoading(true);
-    let url = `http://127.0.0.1:8000/api/ai_recommend/${gameId}`;
+    let url = `${API_BASE}/api/ai_recommend/${gameId}`;
     
     const params = new URLSearchParams();
     
@@ -525,7 +527,7 @@ function HistoryTab({ gameId }) {
 
   const fetchHistory = (month = '') => {
     setLoading(true);
-    fetch(`http://127.0.0.1:8000/api/history/${gameId}?month=${month}`)
+    fetch(`${API_BASE}/api/history/${gameId}?month=${month}`)
       .then(res => res.json())
       .then(d => {
         setHistoryDocs(d.data || []);
@@ -634,7 +636,7 @@ function DuplicateCheckTab({ gameId, data }) {
     if (startMonth) params.append('start_month', startMonth);
     if (endMonth) params.append('end_month', endMonth);
 
-    fetch(`http://127.0.0.1:8000/api/check_duplicate/${gameId}?${params.toString()}`)
+    fetch(`${API_BASE}/api/check_duplicate/${gameId}?${params.toString()}`)
       .then(r => r.json())
       .then(d => {
         setMatches(d.matches || []);
@@ -793,7 +795,7 @@ function PatternTab({ gameId }) {
 
   useEffect(() => {
     setLoading(true);
-    fetch(`http://127.0.0.1:8000/api/pattern_analysis/${gameId}?limit=${limit}`)
+    fetch(`${API_BASE}/api/pattern_analysis/${gameId}?limit=${limit}`)
       .then(r => r.json())
       .then(d => {
         setData(d);
