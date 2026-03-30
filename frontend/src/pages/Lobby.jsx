@@ -38,35 +38,35 @@ export default function Lobby() {
   const [lobbyData, setLobbyData] = React.useState({});
 
   React.useEffect(() => {
-    Promise.all(GAMES.map(game => 
-      fetch(`${API_BASE}/api/ai_recommend/${game.id}?limit=50`)
+    // 各彩券獨立 fetch，誰先回來誰先顯示，不需等全部完成
+    GAMES.forEach(game => {
+      fetch(`${API_BASE}/api/ai_recommend/${game.id}?limit=30`)
         .then(res => res.json())
-        .then(data => ({ id: game.id, data }))
-        .catch(() => ({ id: game.id, data: null }))
-    )).then(results => {
-       const map = {};
-       results.forEach(res => {
-         if(!res.data || !res.data.frequency_distribution) {
-           map[res.id] = { hotNums: [], hotSpecial: [] };
-           return;
-         }
-         // 抓出出現次數最高的前 3 名號碼
-         const hotNums = res.data.frequency_distribution
-            .sort((a,b) => b.count - a.count)
+        .then(data => {
+          if (!data || !data.frequency_distribution) {
+            setLobbyData(prev => ({ ...prev, [game.id]: { hotNums: [], hotSpecial: [] } }));
+            return;
+          }
+          // 抓出出現次數最高的前 3 名號碼
+          const hotNums = data.frequency_distribution
+            .sort((a, b) => b.count - a.count)
             .slice(0, 3)
             .map(d => d.num);
-            
-         // 特殊號碼（威力彩第二區）
-         let hotSpecial = [];
-         if (res.data.has_special && res.data.special_frequency_distribution) {
-             hotSpecial = res.data.special_frequency_distribution
-                .sort((a,b) => b.count - a.count)
-                .slice(0, 1)
-                .map(d => d.num);
-         }
-         map[res.id] = { hotNums, hotSpecial };
-       });
-       setLobbyData(map);
+
+          // 特殊號碼（威力彩第二區）
+          let hotSpecial = [];
+          if (data.has_special && data.special_frequency_distribution) {
+            hotSpecial = data.special_frequency_distribution
+              .sort((a, b) => b.count - a.count)
+              .slice(0, 1)
+              .map(d => d.num);
+          }
+          // 每張卡片獨立更新，先回來的先顯示
+          setLobbyData(prev => ({ ...prev, [game.id]: { hotNums, hotSpecial } }));
+        })
+        .catch(() => {
+          setLobbyData(prev => ({ ...prev, [game.id]: { hotNums: [], hotSpecial: [] } }));
+        });
     });
   }, []);
 

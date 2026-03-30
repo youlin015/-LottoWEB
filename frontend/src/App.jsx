@@ -1,8 +1,10 @@
-import React from "react";
+import React, { lazy, Suspense } from "react";
 import { BrowserRouter as Router, Routes, Route, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import Lobby from "./pages/Lobby";
-import GameDashboard from "./pages/GameDashboard";
+
+// 使用 lazy loading，讓 Lobby 和 GameDashboard 分開打包，不在首屏一次載入
+const Lobby = lazy(() => import("./pages/Lobby"));
+const GameDashboard = lazy(() => import("./pages/GameDashboard"));
 
 export default function App() {
   return (
@@ -13,10 +15,17 @@ export default function App() {
         <Header />
         
         <main className="relative z-10 container mx-auto px-4 py-8 flex-1">
-          <Routes>
-            <Route path="/" element={<Lobby />} />
-            <Route path="/game/:gameId" element={<GameDashboard />} />
-          </Routes>
+          {/* Suspense 讓 lazy 元件在載入時顯示 loading 畫面 */}
+          <Suspense fallback={
+            <div className="flex items-center justify-center h-64">
+              <div className="w-8 h-8 border-2 border-slate-600 border-t-cyan-400 rounded-full animate-spin" />
+            </div>
+          }>
+            <Routes>
+              <Route path="/" element={<Lobby />} />
+              <Route path="/game/:gameId" element={<GameDashboard />} />
+            </Routes>
+          </Suspense>
         </main>
 
         <FeedbackButton />

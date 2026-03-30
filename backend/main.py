@@ -5,6 +5,11 @@ import httpx
 from datetime import datetime
 from collections import Counter
 import random
+import time
+
+# 簡易 in-memory 快取，避免重複呼叫台灣彩券外部 API
+_cache: dict = {}
+CACHE_TTL = 300  # 快取 5 分鐘
 
 app = FastAPI(title="Taiwan Lottery Situation Room API")
 
@@ -34,19 +39,27 @@ GAME_CONFIGS = {
 }
 
 async def fetch_historical_draws(game_id: str, limit: int = 100, start_month: str = "", end_month: str = "") -> list:
-    """Fetch recent data for the given game."""
+    """Fetch recent data for the given game，結果快取 5 分鐘避免重複打外部 API。"""
     url = GAMES_URLS.get(game_id)
     if not url: return []
-    
+
     # Taiwan Lottery requires month bounds
     now = datetime.now()
-    
+
     if not end_month:
         end_month = now.strftime('%Y-%m')
     if not start_month:
         # 預設往前推一年，確保有足夠期數
         start_month = f"{now.year - 1}-01"
-    
+
+    # 檢查快取，命中則直接回傳
+    cache_key = (game_id, limit, start_month, end_month)
+    now_ts = time.time()
+    if cache_key in _cache:
+        cached_time, cached_data = _cache[cache_key]
+        if now_ts - cached_time < CACHE_TTL:
+            return cached_data
+
     params = {
         "period": "",
         "month": start_month,
@@ -54,7 +67,7 @@ async def fetch_historical_draws(game_id: str, limit: int = 100, start_month: st
         "pageNum": 1,
         "pageSize": limit
     }
-    
+
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     async with httpx.AsyncClient(verify=False, headers=headers) as client:
         try:
@@ -63,7 +76,10 @@ async def fetch_historical_draws(game_id: str, limit: int = 100, start_month: st
             # Actual content inside ['content']['data'] or similar based on TaiwanLotteryAPI response
             res_content = data.get('content', {})
             list_docs = res_content.get('daily539Res', []) if game_id == 'daily539' else res_content.get('lotto649Res', []) if game_id == 'lotto649' else res_content.get('superLotto638Res', [])
-            return list_docs[:limit]
+            result = list_docs[:limit]
+            # 寫入快取
+            _cache[cache_key] = (now_ts, result)
+            return result
         except Exception as e:
             print(f"Error fetching data: {e}")
             return []
