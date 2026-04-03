@@ -5,19 +5,23 @@ import clsx from 'clsx';
 const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 const GAMES = [
-  { id: 'lotto638', name: '威力彩', desc: '最高獎金 充滿奇蹟', gradient: 'from-rose-500 to-orange-500', shadow: 'shadow-orange-500/30', drawDays: [1, 4] },
-  { id: 'lotto649', name: '大樂透', desc: '農曆年加碼 最多得主', gradient: 'from-amber-400 to-yellow-600', shadow: 'shadow-yellow-500/30', drawDays: [2, 5] },
-  { id: 'daily539', name: '今彩539', desc: '週一至六 週週有獎', gradient: 'from-sky-400 to-indigo-500', shadow: 'shadow-sky-500/30', drawDays: [1, 2, 3, 4, 5, 6] }
+  { id: 'lotto638', name: '威力彩', desc: '最高獎金 充滿奇蹟', gradient: 'from-rose-500 to-orange-500', shadow: 'shadow-orange-500/30', drawDays: [1, 4], cutoffHour: 20, cutoffMinute: 30 },
+  { id: 'lotto649', name: '大樂透', desc: '農曆年加碼 最多得主', gradient: 'from-amber-400 to-yellow-600', shadow: 'shadow-yellow-500/30', drawDays: [2, 5], cutoffHour: 20, cutoffMinute: 30 },
+  { id: 'daily539', name: '今彩539', desc: '週一至六 週週有獎', gradient: 'from-sky-400 to-indigo-500', shadow: 'shadow-sky-500/30', drawDays: [1, 2, 3, 4, 5, 6], cutoffHour: 21, cutoffMinute: 30 }
 ];
 
-function getNextDrawDate(daysOfWeek) {
+function getNextDrawDate(daysOfWeek, cutoffHour, cutoffMinute) {
   const now = new Date();
   const currentDay = now.getDay();
   const currentHour = now.getHours();
+  const currentMinute = now.getMinutes();
+  const pastCutoff =
+    currentHour > cutoffHour ||
+    (currentHour === cutoffHour && currentMinute >= cutoffMinute);
+  const cutoffLabel = `${cutoffHour}:${String(cutoffMinute).padStart(2, '0')}`;
 
-  // 如果今天是開獎日且還沒超過晚上 8 點收單
-  if (daysOfWeek.includes(currentDay) && currentHour < 20) {
-    return '今日 20:00 截止';
+  if (daysOfWeek.includes(currentDay) && !pastCutoff) {
+    return `今日 ${cutoffLabel} 截止`;
   }
 
   for (let i = 1; i <= 7; i++) {
@@ -162,12 +166,12 @@ export default function Lobby() {
 
               <div className="z-10 text-sm bg-slate-900/50 px-4 py-2 rounded-lg border border-white/5 w-full text-center">
                  <span className="text-cyan-400 font-medium">下次開獎：</span> 
-                 <span className="text-white font-bold">{getNextDrawDate(game.drawDays)}</span>
+                 <span className="text-white font-bold">{getNextDrawDate(game.drawDays, game.cutoffHour, game.cutoffMinute)}</span>
               </div>
 
               {/* 熱門號碼區塊 */}
               <div className="z-10 mt-4 w-full bg-slate-800/40 rounded-xl p-3 border border-white/5">
-                <div className="text-xs text-slate-400 text-center mb-2 font-medium">近 50 期最熱門號碼</div>
+                <div className="text-xs text-slate-400 text-center mb-2 font-medium">近 30 期最熱門號碼</div>
                 
                 {lobbyData[game.id] ? (
                   <div className="flex justify-center flex-wrap gap-2">

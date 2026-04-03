@@ -65,7 +65,7 @@ async def fetch_historical_draws(game_id: str, limit: int = 100, start_month: st
         "month": start_month,
         "endMonth": end_month,
         "pageNum": 1,
-        "pageSize": limit
+        "pageSize": 1000  # 固定傳 1000，確保一次拿完日期區間內所有資料；limit 由後端截斷
     }
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -211,15 +211,11 @@ async def ai_recommend(
     }
 
 @app.get("/api/history/{game_id}")
-async def get_history(game_id: str, month: str = ""):
+async def get_history(game_id: str, start_month: str = "", end_month: str = ""):
     config = GAME_CONFIGS.get(game_id)
     if not config: return {"error": "Game not found"}
-    
-    # If a specific month is queried, only fetch that boundary
-    start_m = month if month else ""
-    end_m = month if month else ""
-        
-    draws = await fetch_historical_draws(game_id, 200, start_m, end_m)
+
+    draws = await fetch_historical_draws(game_id, 1000, start_month, end_month)
     
     # In case API fails just mock some data
     if not draws:

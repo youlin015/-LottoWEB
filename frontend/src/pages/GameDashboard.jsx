@@ -31,6 +31,9 @@ export default function GameDashboard() {
   const [activeTab, setActiveTab] = useState('stats');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [apiError, setApiError] = useState(false);
+  // 顯示載入狀態提示文字（例如：喚醒後端中...）
+  const [loadingStatus, setLoadingStatus] = useState('連線後端伺服器中...');
 
   const [limit, setLimit] = useState(100);
   const [startMonth, setStartMonth] = useState('');
@@ -48,16 +51,20 @@ export default function GameDashboard() {
     return `${y}-${m}`;
   };
 
-  const fetchData = (filters = null) => {
+  const fetchData = (filters = null, overrides = {}) => {
     setLoading(true);
+    const effectiveLimit = overrides.limit ?? limit;
+    const effectiveStart = overrides.startMonth ?? startMonth;
+    const effectiveEnd = overrides.endMonth ?? endMonth;
+
     let url = `${API_BASE}/api/ai_recommend/${gameId}`;
-    
+
     const params = new URLSearchParams();
-    
+
     // Global filters
-    params.append('limit', limit);
-    if(startMonth) params.append('start_month', startMonth);
-    if(endMonth) params.append('end_month', endMonth);
+    params.append('limit', effectiveLimit);
+    if(effectiveStart) params.append('start_month', effectiveStart);
+    if(effectiveEnd) params.append('end_month', effectiveEnd);
 
     // Custom Filters from AI/Filter tab
     if (filters) {
@@ -71,11 +78,13 @@ export default function GameDashboard() {
       .then(res => res.json())
       .then(d => {
         setData(d);
+        setApiError(false);
         setLoading(false);
         if(filters) setActiveTab('ai'); // Switch to AI tab after filtering
       })
       .catch(err => {
         console.error("API error, using mock data.", err);
+        setApiError(true);
         const mockFreq = Array.from({length: 39}, (_, i) => ({num: i+1, count: Math.floor(Math.random() * 20 + 5)}));
         const mockSpecialFreq = Array.from({length: 8}, (_, i) => ({num: i+1, count: Math.floor(Math.random() * 10 + 2)}));
         const hasSpecial = gameId === 'lotto638';
@@ -98,6 +107,8 @@ export default function GameDashboard() {
   };
 
   useEffect(() => {
+    setData(null);
+    setActiveTab('stats');
     fetchData(null);
   }, [gameId]);
 
@@ -166,7 +177,7 @@ export default function GameDashboard() {
                     {[50, 100, 200].map(val => (
                       <button
                         key={val}
-                        onClick={() => setLimit(val)}
+                        onClick={() => { setLimit(val); fetchData(null, { limit: val }); }}
                         className={clsx(
                           "flex-1 py-2 rounded-lg text-sm font-bold transition-all border",
                           limit === val 
@@ -181,32 +192,24 @@ export default function GameDashboard() {
                 </div>
                 <div>
                   <label className="block text-slate-400 text-sm mb-2 font-medium">開始月份 (選填)</label>
-                  <DatePicker 
+                  <DatePicker
                     locale="zh-TW"
                     selected={parseStrDate(startMonth)}
-                    onChange={(date) => setStartMonth(formatStrDate(date))}
+                    onChange={(date) => { const v = formatStrDate(date); setStartMonth(v); fetchData(null, { startMonth: v }); }}
                     dateFormat="yyyy-MM" showMonthYearPicker placeholderText="選擇年份及月份"
                     className="w-full xl:w-40 bg-slate-900 border border-slate-700 text-white px-4 py-2 rounded-lg font-mono text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-colors"
                   />
                 </div>
                 <div>
                   <label className="block text-slate-400 text-sm mb-2 font-medium">結束月份 (選填)</label>
-                  <DatePicker 
+                  <DatePicker
                     locale="zh-TW"
                     selected={parseStrDate(endMonth)}
-                    onChange={(date) => setEndMonth(formatStrDate(date))}
+                    onChange={(date) => { const v = formatStrDate(date); setEndMonth(v); fetchData(null, { endMonth: v }); }}
                     dateFormat="yyyy-MM" showMonthYearPicker placeholderText="選擇年份及月份"
                     className="w-full xl:w-40 bg-slate-900 border border-slate-700 text-white px-4 py-2 rounded-lg font-mono text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-colors"
                   />
                 </div>
-              </div>
-              <div>
-                <button 
-                  onClick={() => fetchData()} 
-                  className="w-full xl:w-auto h-10 px-8 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-400 border border-cyan-500/50 font-bold rounded-lg transition-all active:scale-95 whitespace-nowrap shadow-[0_0_15px_rgba(6,182,212,0.2)] hover:shadow-[0_0_20px_rgba(6,182,212,0.4)]"
-                >
-                  更新時間區間數據
-                </button>
               </div>
             </div>
           </motion.div>
@@ -236,6 +239,14 @@ export default function GameDashboard() {
         ))}
       </div>
 
+      {/* API 錯誤警告：後端連線失敗，顯示模擬數據 */}
+      {apiError && (
+        <div className="mb-4 px-4 py-3 bg-amber-900/40 border border-amber-500/50 rounded-xl text-amber-300 text-sm flex items-center gap-3">
+          <span className="text-lg shrink-0">⚠️</span>
+          <span>後端伺服器連線失敗，以下數據為<strong className="text-amber-200">模擬數據</strong>，僅供介面展示，請勿作為投注參考。</span>
+        </div>
+      )}
+
       {/* Tab Content Area */}
       <div className="flex-1 bg-slate-800/40 backdrop-blur-xl border border-white/10 rounded-2xl p-6 md:p-8 min-h-[50vh] relative overflow-hidden">
         {loading ? (
@@ -245,8 +256,8 @@ export default function GameDashboard() {
         ) : (
           <AnimatePresence mode="wait">
             {activeTab === 'stats' && data && <StatsTab key="stats" data={data} />}
-            {activeTab === 'ai' && data && <AITab key="ai" data={data} />}
-            {activeTab === 'filter' && data && <FilterTab key="filter" data={data} onApply={fetchData} />}
+            {activeTab === 'ai' && data && <AITab key="ai" data={data} onRefresh={() => fetchData(null)} gameId={gameId} />}
+            {activeTab === 'filter' && data && <FilterTab key={`filter-${gameId}`} data={data} onApply={fetchData} />}
             {activeTab === 'history' && <HistoryTab key="history" gameId={gameId} />}
             {activeTab === 'duplicate_check' && <DuplicateCheckTab key="duplicate_check" gameId={gameId} data={data} />}
             {activeTab === 'pattern' && <PatternTab key="pattern" gameId={gameId} />}
@@ -352,7 +363,39 @@ function ChartBlock({ title, distribution, sortBy, isSpecial }) {
   );
 }
 
-function AITab({ data }) {
+function AITab({ data, onRefresh, gameId }) {
+  const [checking, setChecking] = useState(false);
+  const [checkResult, setCheckResult] = useState(null);
+
+  // 換組推薦後重置比對結果
+  useEffect(() => {
+    setCheckResult(null);
+  }, [data.recommendation]);
+
+  const mainNums = data.has_special ? data.recommendation.slice(0, -1) : data.recommendation;
+  const specialNum = data.has_special ? data.recommendation[data.recommendation.length - 1] : null;
+
+  const handleCheck = () => {
+    setChecking(true);
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const params = new URLSearchParams();
+    params.append('nums', mainNums.join(','));
+    if (specialNum !== null) params.append('special', specialNum);
+    params.append('start_month', '2010-01');
+    params.append('end_month', currentMonth);
+    fetch(`${API_BASE}/api/check_duplicate/${gameId}?${params.toString()}`)
+      .then(r => r.json())
+      .then(d => {
+        setCheckResult({ matches: d.matches || [], total_checked: d.total_checked || 0 });
+        setChecking(false);
+      })
+      .catch(() => {
+        setCheckResult({ error: true });
+        setChecking(false);
+      });
+  };
+
   // 模擬數字球一顆顆跳出 (Canvas/CSS Animation 概念使用 Framer Motion 實作)
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="h-full flex flex-col items-center justify-center p-8">
@@ -402,6 +445,78 @@ function AITab({ data }) {
             {data.reason}
           </p>
         </div>
+
+        {/* 歷史比對區塊 */}
+        <div className="mt-6 w-full text-left">
+          {!checkResult && !checking && (
+            <button
+              onClick={handleCheck}
+              className="w-full py-3 bg-slate-700/60 hover:bg-slate-600/80 text-slate-200 font-bold rounded-xl transition-all active:scale-95 border border-slate-600 text-sm"
+            >
+              📅 查詢此組號碼是否曾在歷史中完全開出（2010-01 至今）
+            </button>
+          )}
+
+          {checking && (
+            <div className="flex items-center justify-center gap-3 py-4 text-slate-400">
+              <div className="w-5 h-5 border-2 border-slate-600 border-t-cyan-400 rounded-full animate-spin" />
+              <span className="text-sm">正在比對 2010-01 至今的歷史紀錄...</span>
+            </div>
+          )}
+
+          {checkResult && !checkResult.error && (
+            <div className="bg-slate-900/80 rounded-2xl border border-slate-600/50 overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-700/50 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className={clsx("text-3xl font-black", checkResult.matches.length > 0 ? 'text-green-400' : 'text-rose-400')}>
+                    {checkResult.matches.length}
+                  </span>
+                  <div>
+                    <div className="text-white font-bold text-sm">次完整吻合</div>
+                    <div className="text-slate-400 text-xs">共比對 {checkResult.total_checked} 期歷史紀錄（2010-01 至今）</div>
+                  </div>
+                </div>
+                <button onClick={() => setCheckResult(null)} className="text-slate-500 hover:text-slate-300 text-sm transition-colors px-2">✕</button>
+              </div>
+
+              {checkResult.matches.length === 0 ? (
+                <div className="px-6 py-6 text-center">
+                  <div className="text-2xl mb-2">🏆</div>
+                  <p className="text-slate-300 font-bold text-sm">史無前例的組合！</p>
+                  <p className="text-slate-500 text-xs mt-1">這組號碼從未在歷史中完整出現過。</p>
+                </div>
+              ) : (
+                <div className="max-h-48 overflow-y-auto divide-y divide-slate-700/50">
+                  {checkResult.matches.map((m, i) => (
+                    <div key={i} className="px-5 py-3 flex items-center gap-4">
+                      <span className="text-cyan-400 font-bold text-sm w-16 shrink-0">{m.period} 期</span>
+                      <span className="text-slate-400 text-xs w-24 shrink-0">{m.date}</span>
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {m.numbers.map(n => (
+                          <span key={n} className="w-7 h-7 rounded-full bg-slate-700 flex items-center justify-center font-bold text-xs">{String(n).padStart(2, '0')}</span>
+                        ))}
+                        {m.special !== null && (
+                          <span className="w-7 h-7 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/50 flex items-center justify-center font-bold text-xs ml-1">{String(m.special).padStart(2, '0')}</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {checkResult?.error && (
+            <p className="text-amber-400 text-sm text-center py-3">⚠️ 查詢失敗，請確認後端服務是否正常。</p>
+          )}
+        </div>
+
+        <button
+          onClick={onRefresh}
+          className="mt-4 px-8 py-3 bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold rounded-xl transition-all active:scale-95 border border-slate-600"
+        >
+          🔄 重新推薦
+        </button>
       </div>
     </motion.div>
   );
@@ -411,6 +526,7 @@ function FilterTab({ data, onApply }) {
   const [excludeNums, setExcludeNums] = useState([]);
   const [excludeSpecialNums, setExcludeSpecialNums] = useState([]);
   const [oddEvenRatio, setOddEvenRatio] = useState('ALL'); // ALL, ODD, EVEN, MIX
+  const [validationError, setValidationError] = useState('');
 
   const toggleExclude = (num, isSpecial = false) => {
     if (isSpecial) {
@@ -423,11 +539,13 @@ function FilterTab({ data, onApply }) {
   };
 
   const handleApply = () => {
-    onApply({
-      excludeNums,
-      excludeSpecialNums,
-      oddEvenRatio
-    });
+    const needed = data.max_num === 39 ? 5 : 6;
+    if ((data.max_num || 49) - excludeNums.length < needed) {
+      setValidationError(`排除號碼過多，至少需保留 ${needed} 顆可選號碼（目前剩 ${(data.max_num || 49) - excludeNums.length} 顆）`);
+      return;
+    }
+    setValidationError('');
+    onApply({ excludeNums, excludeSpecialNums, oddEvenRatio });
   };
 
   return (
@@ -494,8 +612,11 @@ function FilterTab({ data, onApply }) {
              </label>
           </div>
 
-          <div className="mt-8 flex justify-end">
-            <button 
+          <div className="mt-8 flex flex-col items-end gap-2">
+            {validationError && (
+              <p className="text-rose-400 text-sm font-medium">{validationError}</p>
+            )}
+            <button
               onClick={handleApply}
               className="bg-gradient-to-r from-cyan-500 to-blue-500 text-white font-bold py-3 px-8 rounded-xl shadow-[0_0_20px_rgba(6,182,212,0.4)] hover:shadow-[0_0_30px_rgba(6,182,212,0.6)] hover:scale-105 active:scale-95 transition-all"
             >
@@ -511,7 +632,9 @@ function FilterTab({ data, onApply }) {
 function HistoryTab({ gameId }) {
   const [historyDocs, setHistoryDocs] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [searchMonth, setSearchMonth] = useState('');
+  const [error, setError] = useState(false);
+  const [searchStart, setSearchStart] = useState('');
+  const [searchEnd, setSearchEnd] = useState('');
 
   const parseStrDate = (str) => {
     if (!str) return null;
@@ -525,37 +648,57 @@ function HistoryTab({ gameId }) {
     return `${y}-${m}`;
   };
 
-  const fetchHistory = (month = '') => {
+  const fetchHistory = (start = '', end = '') => {
     setLoading(true);
-    fetch(`${API_BASE}/api/history/${gameId}?month=${month}`)
+    setError(false);
+    const params = new URLSearchParams();
+    if (start) params.append('start_month', start);
+    if (end) params.append('end_month', end);
+    fetch(`${API_BASE}/api/history/${gameId}?${params.toString()}`)
       .then(res => res.json())
       .then(d => {
         setHistoryDocs(d.data || []);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => {
+        setError(true);
+        setLoading(false);
+      });
   };
 
   useEffect(() => {
-    // 進入時自動抓取最新歷史資料
-    fetchHistory('');
+    fetchHistory('', '');
   }, [gameId]);
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full overflow-y-auto pr-4 pb-12 w-full">
-       <div className="flex flex-col sm:flex-row items-center justify-between mb-8 gap-4 bg-slate-800/60 p-6 rounded-2xl border border-cyan-500/30">
-         <h3 className="text-xl font-bold text-cyan-400">📅 指定單月歷史查詢</h3>
-         <div className="flex items-center gap-3">
-           <DatePicker 
-             locale="zh-TW"
-             selected={parseStrDate(searchMonth)}
-             onChange={(date) => setSearchMonth(formatStrDate(date))}
-             dateFormat="yyyy-MM" showMonthYearPicker placeholderText="選擇查詢月份"
-             className="w-full md:w-48 bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 outline-none focus:border-cyan-500 transition-colors"
-           />
-           <button 
-             onClick={() => fetchHistory(searchMonth)} 
-             className="bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 px-6 py-2 rounded-lg font-bold transition-all shadow-lg active:scale-95"
+       <div className="flex flex-col gap-4 mb-8 bg-slate-800/60 p-6 rounded-2xl border border-cyan-500/30">
+         <h3 className="text-xl font-bold text-cyan-400">📅 歷史開獎區間查詢</h3>
+         <div className="flex flex-col sm:flex-row items-end gap-3">
+           <div className="flex-1">
+             <label className="text-slate-400 text-xs mb-1 block font-medium">開始月份（選填）</label>
+             <DatePicker
+               locale="zh-TW"
+               selected={parseStrDate(searchStart)}
+               onChange={(date) => setSearchStart(formatStrDate(date))}
+               dateFormat="yyyy-MM" showMonthYearPicker placeholderText="不限（最早期）"
+               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 outline-none focus:border-cyan-500 transition-colors text-white text-sm"
+             />
+           </div>
+           <div className="text-slate-500 font-bold pb-2 hidden sm:block">—</div>
+           <div className="flex-1">
+             <label className="text-slate-400 text-xs mb-1 block font-medium">結束月份（選填）</label>
+             <DatePicker
+               locale="zh-TW"
+               selected={parseStrDate(searchEnd)}
+               onChange={(date) => setSearchEnd(formatStrDate(date))}
+               dateFormat="yyyy-MM" showMonthYearPicker placeholderText="不限（最新期）"
+               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 outline-none focus:border-cyan-500 transition-colors text-white text-sm"
+             />
+           </div>
+           <button
+             onClick={() => fetchHistory(searchStart, searchEnd)}
+             className="bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 px-6 py-2 rounded-lg font-bold transition-all shadow-lg active:scale-95 whitespace-nowrap"
            >
              查詢
            </button>
@@ -566,8 +709,13 @@ function HistoryTab({ gameId }) {
          <div className="flex justify-center items-center h-48">
            <div className="w-12 h-12 border-4 border-slate-700 border-t-cyan-400 rounded-full animate-spin"></div>
          </div>
+       ) : error ? (
+         <div className="text-center py-20 text-amber-400 font-medium bg-amber-900/20 rounded-2xl border border-dashed border-amber-700">
+           <div className="text-3xl mb-3">⚠️</div>
+           無法連線後端伺服器，請確認服務是否正常後再試一次。
+         </div>
        ) : historyDocs.length === 0 ? (
-         <div className="text-center py-20 text-slate-500 font-medium bg-slate-800/20 rounded-2xl border border-dashed border-slate-700">該月份查無開獎資料</div>
+         <div className="text-center py-20 text-slate-500 font-medium bg-slate-800/20 rounded-2xl border border-dashed border-slate-700">指定區間查無開獎資料</div>
        ) : (
          <div className="grid grid-cols-1 gap-4">
            {historyDocs.map((doc, idx) => (
@@ -609,6 +757,7 @@ function HistoryTab({ gameId }) {
 function DuplicateCheckTab({ gameId, data }) {
   const [selectedNums, setSelectedNums] = useState([]);
   const [selectedSpecial, setSelectedSpecial] = useState(null);
+  const [limitWarning, setLimitWarning] = useState(false);
   const [startMonth, setStartMonth] = useState('2010-01');
   const [endMonth, setEndMonth] = useState('');
   const [matches, setMatches] = useState(null);
@@ -646,14 +795,20 @@ function DuplicateCheckTab({ gameId, data }) {
       .catch(() => setLoading(false));
   };
 
+  const maxAllowed = data.max_num === 39 ? 5 : 6;
+
   const toggleNum = (n, isSpecial = false) => {
     if (isSpecial) {
       if (selectedSpecial === n) setSelectedSpecial(null);
       else setSelectedSpecial(n);
     } else {
-      if (selectedNums.includes(n)) setSelectedNums(selectedNums.filter(x => x !== n));
-      else if (selectedNums.length < (data.max_num === 39 ? 5 : 6)) {
+      if (selectedNums.includes(n)) {
+        setSelectedNums(selectedNums.filter(x => x !== n));
+      } else if (selectedNums.length < maxAllowed) {
         setSelectedNums([...selectedNums, n].sort((a,b)=>a-b));
+      } else {
+        setLimitWarning(true);
+        setTimeout(() => setLimitWarning(false), 2000);
       }
     }
   };
@@ -693,7 +848,12 @@ function DuplicateCheckTab({ gameId, data }) {
            <div className="mb-6">
              <div className="flex justify-between items-center mb-4">
                <h4 className="font-bold text-lg">選擇您的第一區號碼</h4>
-               <span className="text-cyan-400 text-sm font-bold">已選 {selectedNums.length} / {data.max_num === 39 ? 5 : 6}</span>
+               <div className="flex items-center gap-3">
+                 {limitWarning && (
+                   <span className="text-rose-400 text-xs font-bold animate-pulse">已達上限 {maxAllowed} 顆</span>
+                 )}
+                 <span className="text-cyan-400 text-sm font-bold">已選 {selectedNums.length} / {maxAllowed}</span>
+               </div>
              </div>
              <div className="grid grid-cols-7 sm:grid-cols-10 gap-2">
                 {Array.from({length: data.max_num || 49}, (_, i) => i+1).map(n => (
@@ -791,17 +951,22 @@ function DuplicateCheckTab({ gameId, data }) {
 function PatternTab({ gameId }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
   const [limit, setLimit] = useState(50);
 
   useEffect(() => {
     setLoading(true);
+    setError(false);
     fetch(`${API_BASE}/api/pattern_analysis/${gameId}?limit=${limit}`)
       .then(r => r.json())
       .then(d => {
         setData(d);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => {
+        setError(true);
+        setLoading(false);
+      });
   }, [gameId, limit]);
 
   return (
@@ -811,22 +976,33 @@ function PatternTab({ gameId }) {
            <h3 className="text-2xl font-bold mb-2 text-cyan-400">📈 近期熱門拖牌與規律預測</h3>
            <p className="text-slate-400 text-sm">動態掃描您指定的近期範圍開獎紀錄，找出正在處於「火熱狀態」的連續性特殊規律。<br/>（過濾掉雜訊，僅顯示近期內關聯命中率大於 <strong className="text-white">50%</strong> 以上的參考指標）。</p>
          </div>
-         <select 
-           value={limit} 
-           onChange={(e) => setLimit(Number(e.target.value))} 
-           className="bg-slate-900 border border-slate-600 text-cyan-400 px-6 py-3 rounded-xl outline-none focus:border-cyan-500 font-bold shadow-lg appearance-none cursor-pointer"
-         >
-           <option value={30}>🔥 觀測近 30 期</option>
-           <option value={50}>🔥 觀測近 50 期</option>
-           <option value={100}>📊 觀測近 100 期</option>
-           <option value={200}>📊 觀測近 200 期</option>
-         </select>
+         <div className="flex gap-2 flex-wrap">
+           {[30, 50, 100, 200].map(val => (
+             <button
+               key={val}
+               onClick={() => setLimit(val)}
+               className={clsx(
+                 "px-4 py-2 rounded-lg text-sm font-bold transition-all border",
+                 limit === val
+                   ? "bg-cyan-500/20 text-cyan-400 border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]"
+                   : "bg-slate-900 border-slate-700 text-slate-400 hover:border-cyan-500/50"
+               )}
+             >
+               {val} 期
+             </button>
+           ))}
+         </div>
       </div>
       
       {loading ? (
         <div className="flex flex-col justify-center items-center py-20 gap-4">
           <div className="w-16 h-16 border-4 border-slate-700 border-t-cyan-400 rounded-full animate-spin"></div>
           <div className="text-slate-400 font-bold animate-pulse text-lg">正在深度運算近 {limit} 期歷史拖牌指引...</div>
+        </div>
+      ) : error ? (
+        <div className="text-center py-20 text-amber-400 font-medium bg-amber-900/20 rounded-3xl border border-dashed border-amber-700">
+          <div className="text-4xl mb-4">⚠️</div>
+          無法連線後端伺服器，請確認服務是否正常後再試一次。
         </div>
       ) : !data || !data.patterns || data.patterns.length === 0 ? (
         <div className="text-center py-20 text-slate-500 font-medium bg-slate-800/60 rounded-3xl border border-dashed border-slate-600">
