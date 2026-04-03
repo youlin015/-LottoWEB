@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
@@ -52,6 +52,11 @@ async def fetch_historical_draws(game_id: str, limit: int = 100, start_month: st
         # 預設往前推一年，確保有足夠期數
         start_month = f"{now.year - 1}-01"
 
+    # 台灣彩券 API 僅提供近 10 年資料，超出範圍自動截斷
+    ten_years_ago = f"{now.year - 10}-{now.strftime('%m')}"
+    if start_month < ten_years_ago:
+        start_month = ten_years_ago
+
     # 檢查快取，命中則直接回傳
     cache_key = (game_id, limit, start_month, end_month)
     now_ts = time.time()
@@ -60,29 +65,40 @@ async def fetch_historical_draws(game_id: str, limit: int = 100, start_month: st
         if now_ts - cached_time < CACHE_TTL:
             return cached_data
 
-    params = {
-        "period": "",
-        "month": start_month,
-        "endMonth": end_month,
-        "pageNum": 1,
-        "pageSize": 1000  # 固定傳 1000，確保一次拿完日期區間內所有資料；limit 由後端截斷
-    }
-
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    all_docs = []
+    page_num = 1
+
     async with httpx.AsyncClient(verify=False, headers=headers) as client:
-        try:
-            resp = await client.get(url, params=params)
-            data = resp.json()
-            # Actual content inside ['content']['data'] or similar based on TaiwanLotteryAPI response
-            res_content = data.get('content', {})
-            list_docs = res_content.get('daily539Res', []) if game_id == 'daily539' else res_content.get('lotto649Res', []) if game_id == 'lotto649' else res_content.get('superLotto638Res', [])
-            result = list_docs[:limit]
-            # 寫入快取
-            _cache[cache_key] = (now_ts, result)
-            return result
-        except Exception as e:
-            print(f"Error fetching data: {e}")
-            return []
+        while True:
+            params = {
+                "period": "",
+                "month": start_month,
+                "endMonth": end_month,
+                "pageNum": page_num,
+                "pageSize": 5000
+            }
+            try:
+                resp = await client.get(url, params=params)
+                data = resp.json()
+                res_content = data.get('content', {})
+                list_docs = res_content.get('daily539Res', []) if game_id == 'daily539' else res_content.get('lotto649Res', []) if game_id == 'lotto649' else res_content.get('superLotto638Res', [])
+                all_docs.extend(list_docs)
+                # 若這一頁不足 1000 筆，代表已是最後一頁；若已達 limit 也停止
+                if len(list_docs) < 5000 or len(all_docs) >= limit:
+                    break
+                page_num += 1
+            except Exception as e:
+                print(f"Error fetching data (page {page_num}): {e}")
+                break
+
+    result = all_docs[:limit]
+    # 寫入快取（限制大小避免記憶體洩漏）
+    if len(_cache) >= 100:
+        oldest_key = min(_cache, key=lambda k: _cache[k][0])
+        del _cache[oldest_key]
+    _cache[cache_key] = (now_ts, result)
+    return result
 
 def calculate_hot_cold_and_consecutive(draws: list, config: dict):
     """
@@ -96,19 +112,14 @@ def calculate_hot_cold_and_consecutive(draws: list, config: dict):
     
     for draw in draws:
         nums = draw.get('drawNumberSize', [])
-        if nums:
-            real_nums = [int(n) for n in nums]
-            if has_special and len(real_nums) > config['draw_count']:
-                special_nums = [real_nums[-1]]
-                real_nums = real_nums[:-1]
-            else:
-                special_nums = []
+        if not nums:
+            continue
+        real_nums = [int(n) for n in nums]
+        if has_special and len(real_nums) > config['draw_count']:
+            special_nums = [real_nums[-1]]
+            real_nums = real_nums[:-1]
         else:
-            real_nums = random.sample(range(1, config['max_num'] + 1), config['draw_count'])
-            if has_special:
-                special_nums = [random.randint(1, config.get('special_max', 8))]
-            else:
-                special_nums = []
+            special_nums = []
                 
         all_numbers.extend(real_nums[:config['draw_count']])
         if has_special and special_nums:
@@ -142,17 +153,12 @@ async def ai_recommend(
 ):
     config = GAME_CONFIGS.get(game_id)
     if not config:
-        return {"error": "Game not found"}
-        
+        raise HTTPException(status_code=404, detail="Game not found")
+
     draws = await fetch_historical_draws(game_id, limit, start_month, end_month)
-    
-    # In case API fails
+
     if not draws:
-        draws = []
-        for _ in range(100):
-            mock_nums = random.sample(range(1, config['max_num'] + 1), config['draw_count'])
-            if config.get('has_special'): mock_nums.append(random.randint(1, config.get('special_max', 8)))
-            draws.append({'drawNumberSize': mock_nums})
+        raise HTTPException(status_code=503, detail="無法取得彩券開獎資料，請稍後再試")
             
     freq_map, special_freq_map, consec_prob = calculate_hot_cold_and_consecutive(draws, config)
     
@@ -213,22 +219,10 @@ async def ai_recommend(
 @app.get("/api/history/{game_id}")
 async def get_history(game_id: str, start_month: str = "", end_month: str = ""):
     config = GAME_CONFIGS.get(game_id)
-    if not config: return {"error": "Game not found"}
+    if not config:
+        raise HTTPException(status_code=404, detail="Game not found")
 
-    draws = await fetch_historical_draws(game_id, 1000, start_month, end_month)
-    
-    # In case API fails just mock some data
-    if not draws:
-        draws = []
-        for d in range(1, 31):
-            mock_nums = random.sample(range(1, config['max_num'] + 1), config['draw_count'])
-            if config.get('has_special'): mock_nums.append(random.randint(1, config.get('special_max', 8)))
-            draws.append({
-                'period': f"1150000{d:02}",
-                'lotteryDate': f"2026-03-{d:02}T00:00:00",
-                'drawNumberSize': mock_nums
-            })
-            if len(draws) == 10: break
+    draws = await fetch_historical_draws(game_id, 5000, start_month, end_month)
 
     results = []
     for draw in draws:
@@ -265,8 +259,9 @@ async def get_history(game_id: str, start_month: str = "", end_month: str = ""):
 @app.get("/api/check_duplicate/{game_id}")
 async def check_duplicate(game_id: str, nums: str = "", special: str = "", start_month: str = "2010-01", end_month: str = ""):
     config = GAME_CONFIGS.get(game_id)
-    if not config: return {"error": "Game not found"}
-    
+    if not config:
+        raise HTTPException(status_code=404, detail="Game not found")
+
     # fetch potentially huge dataset
     now = datetime.now()
     if not end_month: end_month = now.strftime('%Y-%m')
@@ -289,9 +284,9 @@ async def check_duplicate(game_id: str, nums: str = "", special: str = "", start
             sp = None
             main_nums = set(real_nums[:config['draw_count']])
             
-        # If target numbers are a subset of the drawn numbers
+        # 完整吻合比對：目標號碼集合必須完全等同於開獎號碼集合
         is_match = True
-        if target_nums and not target_nums.issubset(main_nums):
+        if target_nums and target_nums != main_nums:
             is_match = False
             
         if target_sp and config.get('has_special'):
@@ -319,11 +314,21 @@ async def check_duplicate(game_id: str, nums: str = "", special: str = "", start
 @app.get("/api/pattern_analysis/{game_id}")
 async def pattern_analysis(game_id: str, limit: int = 50):
     config = GAME_CONFIGS.get(game_id)
-    if not config: return {"error": "Game not found"}
-    
+    if not config:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    # 檢查模式分析快取（O(N×M²) 計算成本高，TTL 內直接回傳快取）
+    pattern_cache_key = ('pattern', game_id, limit)
+    now_ts = time.time()
+    if pattern_cache_key in _cache:
+        cached_time, cached_data = _cache[pattern_cache_key]
+        if now_ts - cached_time < CACHE_TTL:
+            return cached_data
+
     # Fetch recent data based on limit. Empty start_month defaults to 1 year back, sufficient for limit up to 200+
     draws = await fetch_historical_draws(game_id, limit, "", "")
-    if not draws: return {"patterns": []}
+    if not draws:
+        raise HTTPException(status_code=503, detail="無法取得彩券開獎資料，請稍後再試")
     
     clean_draws = []
     for d in draws:
@@ -372,11 +377,17 @@ async def pattern_analysis(game_id: str, limit: int = 50):
     patterns.sort(key=lambda x: (x['probability'], x['appearances']), reverse=True)
     
     # Return top 50 robust patterns
-    return {
+    result = {
         "game": config["name"],
         "analyzed_draws": len(clean_draws),
         "patterns": patterns[:50]
     }
+    # 寫入快取
+    if len(_cache) >= 100:
+        oldest_key = min(_cache, key=lambda k: _cache[k][0])
+        del _cache[oldest_key]
+    _cache[pattern_cache_key] = (now_ts, result)
+    return result
 
 if __name__ == "__main__":
     import uvicorn

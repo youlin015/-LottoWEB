@@ -83,24 +83,8 @@ export default function GameDashboard() {
         if(filters) setActiveTab('ai'); // Switch to AI tab after filtering
       })
       .catch(err => {
-        console.error("API error, using mock data.", err);
+        console.error("API error:", err);
         setApiError(true);
-        const mockFreq = Array.from({length: 39}, (_, i) => ({num: i+1, count: Math.floor(Math.random() * 20 + 5)}));
-        const mockSpecialFreq = Array.from({length: 8}, (_, i) => ({num: i+1, count: Math.floor(Math.random() * 10 + 2)}));
-        const hasSpecial = gameId === 'lotto638';
-        const rec = hasSpecial ? [5, 12, 19, 23, 33, 38, 7] : [5, 12, 19, 23, 33];
-        setData({
-          game: gameId === 'lotto638' ? '威力彩' : gameId === 'lotto649' ? '大樂透' : '今彩539',
-          drawn_from_total: 100,
-          consecutive_probability_hist: 45.2,
-          recommendation: rec,
-          has_special: hasSpecial,
-          max_num: gameId === 'lotto638' ? 38 : gameId === 'lotto649' ? 49 : 39,
-          special_max: 8,
-          frequency_distribution: mockFreq,
-          special_frequency_distribution: mockSpecialFreq,
-          reason: "基於過去的數據分析，連號機率高於平均。演算法根據冷熱頻次分配抽樣權重，推薦這組高機率組合。"
-        });
         setLoading(false);
         if(filters) setActiveTab('ai');
       });
@@ -253,13 +237,18 @@ export default function GameDashboard() {
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="w-16 h-16 border-4 border-cyan-500/30 border-t-cyan-500 rounded-full animate-spin" />
           </div>
+        ) : !data && ['stats', 'ai', 'filter', 'duplicate_check'].includes(activeTab) ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-slate-400">
+            <div className="text-5xl">📡</div>
+            <p className="font-medium">目前無資料可顯示，請確認後端服務是否正常後再試</p>
+          </div>
         ) : (
           <AnimatePresence mode="wait">
             {activeTab === 'stats' && data && <StatsTab key="stats" data={data} />}
             {activeTab === 'ai' && data && <AITab key="ai" data={data} onRefresh={() => fetchData(null)} gameId={gameId} />}
             {activeTab === 'filter' && data && <FilterTab key={`filter-${gameId}`} data={data} onApply={fetchData} />}
             {activeTab === 'history' && <HistoryTab key="history" gameId={gameId} />}
-            {activeTab === 'duplicate_check' && <DuplicateCheckTab key="duplicate_check" gameId={gameId} data={data} />}
+            {activeTab === 'duplicate_check' && data && <DuplicateCheckTab key="duplicate_check" gameId={gameId} data={data} />}
             {activeTab === 'pattern' && <PatternTab key="pattern" gameId={gameId} />}
           </AnimatePresence>
         )}
@@ -630,7 +619,9 @@ function FilterTab({ data, onApply }) {
 }
 
 function HistoryTab({ gameId }) {
+  const ITEMS_PER_PAGE = 500;
   const [historyDocs, setHistoryDocs] = useState([]);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [searchStart, setSearchStart] = useState('');
@@ -658,6 +649,7 @@ function HistoryTab({ gameId }) {
       .then(res => res.json())
       .then(d => {
         setHistoryDocs(d.data || []);
+        setPage(1);
         setLoading(false);
       })
       .catch(() => {
@@ -717,8 +709,27 @@ function HistoryTab({ gameId }) {
        ) : historyDocs.length === 0 ? (
          <div className="text-center py-20 text-slate-500 font-medium bg-slate-800/20 rounded-2xl border border-dashed border-slate-700">指定區間查無開獎資料</div>
        ) : (
-         <div className="grid grid-cols-1 gap-4">
-           {historyDocs.map((doc, idx) => (
+         <>
+           {historyDocs.length > ITEMS_PER_PAGE && (
+             <div className="flex justify-center flex-wrap gap-3 mb-6">
+               {Array.from({ length: Math.ceil(historyDocs.length / ITEMS_PER_PAGE) }, (_, i) => i + 1).map(p => (
+                 <button
+                   key={p}
+                   onClick={() => setPage(p)}
+                   className={clsx("px-5 py-2 rounded-lg font-bold border transition-all text-sm",
+                     page === p
+                       ? "bg-cyan-500/20 text-cyan-400 border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]"
+                       : "bg-slate-900 border-slate-700 text-slate-400 hover:border-cyan-500"
+                   )}
+                 >
+                   第 {p} 頁
+                 </button>
+               ))}
+               <span className="self-center text-slate-500 text-sm">共 {historyDocs.length} 筆</span>
+             </div>
+           )}
+           <div className="grid grid-cols-1 gap-4">
+             {historyDocs.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE).map((doc, idx) => (
               <div key={idx} className="bg-slate-800/40 p-5 rounded-xl border border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-slate-800/60 transition-colors">
                 
                 <div className="flex flex-col gap-1 w-full md:w-32">
@@ -749,6 +760,7 @@ function HistoryTab({ gameId }) {
               </div>
            ))}
          </div>
+         </>
        )}
     </motion.div>
   );
@@ -758,7 +770,7 @@ function DuplicateCheckTab({ gameId, data }) {
   const [selectedNums, setSelectedNums] = useState([]);
   const [selectedSpecial, setSelectedSpecial] = useState(null);
   const [limitWarning, setLimitWarning] = useState(false);
-  const [startMonth, setStartMonth] = useState('2010-01');
+  const [startMonth, setStartMonth] = useState(`${new Date().getFullYear() - 10}-01`);
   const [endMonth, setEndMonth] = useState('');
   const [matches, setMatches] = useState(null);
   const [loading, setLoading] = useState(false);
