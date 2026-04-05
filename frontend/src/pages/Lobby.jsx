@@ -42,9 +42,14 @@ export default function Lobby() {
   const [lobbyData, setLobbyData] = React.useState({});
 
   React.useEffect(() => {
+    // 近 30 期只需往前約 5 個月資料，縮短後端向台灣彩券 API 的抓取量
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+    const startMonth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+
     // 各彩券獨立 fetch，誰先回來誰先顯示，不需等全部完成
     GAMES.forEach(game => {
-      fetch(`${API_BASE}/api/ai_recommend/${game.id}?limit=30`)
+      fetch(`${API_BASE}/api/ai_recommend/${game.id}?limit=30&start_month=${startMonth}`)
         .then(res => res.json())
         .then(data => {
           if (!data || !data.frequency_distribution) {

@@ -6,6 +6,16 @@ import { AnimatePresence, motion } from "framer-motion";
 const Lobby = lazy(() => import("./pages/Lobby"));
 const GameDashboard = lazy(() => import("./pages/GameDashboard"));
 
+// 獨立組件以便在 Router 內使用 useLocation hook
+function AnimatedRoutes() {
+  return (
+    <Routes>
+      <Route path="/" element={<Lobby />} />
+      <Route path="/game/:gameId" element={<GameDashboard />} />
+    </Routes>
+  );
+}
+
 export default function App() {
   return (
     <Router>
@@ -13,7 +23,7 @@ export default function App() {
         <BackgroundEffects />
         <DisclaimerBanner />
         <Header />
-        
+
         <main className="relative z-10 container mx-auto px-4 py-8 flex-1">
           {/* Suspense 讓 lazy 元件在載入時顯示 loading 畫面 */}
           <Suspense fallback={
@@ -21,10 +31,7 @@ export default function App() {
               <div className="w-8 h-8 border-2 border-slate-600 border-t-cyan-400 rounded-full animate-spin" />
             </div>
           }>
-            <Routes>
-              <Route path="/" element={<Lobby />} />
-              <Route path="/game/:gameId" element={<GameDashboard />} />
-            </Routes>
+            <AnimatedRoutes />
           </Suspense>
         </main>
 

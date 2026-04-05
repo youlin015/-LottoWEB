@@ -82,7 +82,7 @@ async def fetch_historical_draws(game_id: str, limit: int = 100, start_month: st
     page_num = 1
 
     try:
-        async with httpx.AsyncClient(verify=True, headers=headers) as client:
+        async with httpx.AsyncClient(verify=False, headers=headers, timeout=30.0) as client:
             while True:
                 params = {
                     "period": "",
@@ -93,16 +93,24 @@ async def fetch_historical_draws(game_id: str, limit: int = 100, start_month: st
                 }
                 try:
                     resp = await client.get(url, params=params)
+                    print(f"[DEBUG] {game_id} page={page_num} status={resp.status_code}")
+                    if resp.status_code != 200:
+                        print(f"[ERROR] upstream returned HTTP {resp.status_code}: {resp.text[:200]}")
+                        break
                     data = resp.json()
                     res_content = data.get('content', {})
+                    if res_content is None:
+                        print(f"[ERROR] upstream response missing 'content': {str(data)[:200]}")
+                        break
                     list_docs = res_content.get('daily539Res', []) if game_id == 'daily539' else res_content.get('lotto649Res', []) if game_id == 'lotto649' else res_content.get('superLotto638Res', [])
+                    print(f"[DEBUG] {game_id} page={page_num} got {len(list_docs)} records")
                     all_docs.extend(list_docs)
                     # 若這一頁不足 5000 筆，代表已是最後一頁
                     if len(list_docs) < 5000:
                         break
                     page_num += 1
                 except Exception as e:
-                    print(f"Error fetching data (page {page_num}): {e}")
+                    print(f"[ERROR] fetching {game_id} page {page_num}: {type(e).__name__}: {e}")
                     break
 
         # 快取完整資料集（不加 limit），不同 limit 的呼叫可共用同一份快取

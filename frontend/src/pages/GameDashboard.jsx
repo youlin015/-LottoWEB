@@ -45,6 +45,7 @@ export default function GameDashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState(false);
+  const [waking, setWaking] = useState(false);
   const [limit, setLimit] = useState(100);
   const [startMonth, setStartMonth] = useState('');
   const [endMonth, setEndMonth] = useState('');
@@ -60,6 +61,7 @@ export default function GameDashboard() {
     const controller = new AbortController();
     abortRef.current = controller;
 
+    if (_retryCount === 0) { setWaking(false); }
     setLoading(true);
     const effectiveLimit = overrides.limit ?? limit;
     const effectiveStart = overrides.startMonth ?? startMonth;
@@ -83,21 +85,32 @@ export default function GameDashboard() {
     url += `?${params.toString()}`;
 
     fetch(url, { signal: controller.signal })
-      .then(res => res.json())
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
       .then(d => {
+        if (!Array.isArray(d?.frequency_distribution)) throw new Error('invalid_format');
         setData(d);
         setApiError(false);
+        setWaking(false);
         setLoading(false);
         if(filters) setActiveTab('ai'); // Switch to AI tab after filtering
       })
       .catch(err => {
         if (err.name === 'AbortError') return; // 被新請求取消，忽略
-        // 後端可能 cold start（Render 免費方案閒置後需喚醒），自動重試一次
-        if (_retryCount === 0) {
-          retryTimerRef.current = setTimeout(() => fetchData(filters, overrides, 1), 4000);
+        // 後端可能 cold start（Render 免費方案閒置後需喚醒），自動重試最多 3 次
+        const RETRY_DELAYS = [8000, 16000, 25000]; // 逐步拉長等待時間
+        if (_retryCount < RETRY_DELAYS.length) {
+          setWaking(true);
+          retryTimerRef.current = setTimeout(
+            () => fetchData(filters, overrides, _retryCount + 1),
+            RETRY_DELAYS[_retryCount]
+          );
           return;
         }
         console.error("API error:", err);
+        setWaking(false);
         setApiError(true);
         setLoading(false);
         if(filters) setActiveTab('ai');
@@ -112,6 +125,7 @@ export default function GameDashboard() {
 
   useEffect(() => {
     setData(null);
+    setWaking(false);
     setActiveTab('stats');
     fetchData(null);
   }, [gameId]);
@@ -254,8 +268,13 @@ export default function GameDashboard() {
       {/* Tab Content Area */}
       <div className="flex-1 bg-slate-800/40 backdrop-blur-xl border border-white/10 rounded-2xl p-6 md:p-8 min-h-[50vh] relative overflow-hidden">
         {loading ? (
-          <div className="absolute inset-0 flex items-center justify-center">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4">
             <div className="w-16 h-16 border-4 border-cyan-500/30 border-t-cyan-500 rounded-full animate-spin" />
+            {waking && (
+              <p className="text-amber-400 text-sm font-medium animate-pulse">
+                ⏳ 後端服務喚醒中，請稍候（約 30 秒）…
+              </p>
+            )}
           </div>
         ) : !data && ['stats', 'ai', 'filter', 'duplicate_check'].includes(activeTab) ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-slate-400">
@@ -316,7 +335,7 @@ function StatsTab({ data }) {
 
 function ChartBlock({ title, distribution, sortBy, isSpecial }) {
   const chartData = useMemo(() =>
-    [...distribution].sort((a, b) => sortBy === 'num' ? a.num - b.num : b.count - a.count),
+    Array.isArray(distribution) ? [...distribution].sort((a, b) => sortBy === 'num' ? a.num - b.num : b.count - a.count) : [],
     [distribution, sortBy]
   );
 
