@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import ReactECharts from 'echarts-for-react';
@@ -9,6 +9,19 @@ import zhTW from 'date-fns/locale/zh-TW';
 registerLocale('zh-TW', zhTW);
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+
+// 日期字串轉換 helper，多個 Tab 組件共用，定義於模組層避免重複
+const parseStrDate = (str) => {
+  if (!str) return null;
+  const [y, m] = str.split('-');
+  return new Date(y, m - 1);
+};
+const formatStrDate = (date) => {
+  if (!date) return '';
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  return `${y}-${m}`;
+};
 
 const TABS = [
   { id: 'stats', label: '📊 數據統計圖表' },
@@ -32,26 +45,21 @@ export default function GameDashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState(false);
-  // 顯示載入狀態提示文字（例如：喚醒後端中...）
-  const [loadingStatus, setLoadingStatus] = useState('連線後端伺服器中...');
-
   const [limit, setLimit] = useState(100);
   const [startMonth, setStartMonth] = useState('');
   const [endMonth, setEndMonth] = useState('');
 
-  const parseStrDate = (str) => {
-    if (!str) return null;
-    const [y, m] = str.split('-');
-    return new Date(y, m - 1);
-  };
-  const formatStrDate = (date) => {
-    if (!date) return '';
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    return `${y}-${m}`;
-  };
+  const abortRef = useRef(null);
+  const debounceRef = useRef(null);
+  const retryTimerRef = useRef(null);
 
-  const fetchData = (filters = null, overrides = {}) => {
+  const fetchData = (filters = null, overrides = {}, _retryCount = 0) => {
+    // 取消任何待重試的計時器及尚未完成的請求
+    if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
     const effectiveLimit = overrides.limit ?? limit;
     const effectiveStart = overrides.startMonth ?? startMonth;
@@ -74,7 +82,7 @@ export default function GameDashboard() {
     }
     url += `?${params.toString()}`;
 
-    fetch(url)
+    fetch(url, { signal: controller.signal })
       .then(res => res.json())
       .then(d => {
         setData(d);
@@ -83,11 +91,23 @@ export default function GameDashboard() {
         if(filters) setActiveTab('ai'); // Switch to AI tab after filtering
       })
       .catch(err => {
+        if (err.name === 'AbortError') return; // 被新請求取消，忽略
+        // 後端可能 cold start（Render 免費方案閒置後需喚醒），自動重試一次
+        if (_retryCount === 0) {
+          retryTimerRef.current = setTimeout(() => fetchData(filters, overrides, 1), 4000);
+          return;
+        }
         console.error("API error:", err);
         setApiError(true);
         setLoading(false);
         if(filters) setActiveTab('ai');
       });
+  };
+
+  // 防抖：連續觸發時只執行最後一次（避免快速切換 limit / 日期時連打 API）
+  const debounceFetch = (filters, overrides, delay = 300) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => fetchData(filters, overrides), delay);
   };
 
   useEffect(() => {
@@ -161,7 +181,7 @@ export default function GameDashboard() {
                     {[50, 100, 200].map(val => (
                       <button
                         key={val}
-                        onClick={() => { setLimit(val); fetchData(null, { limit: val }); }}
+                        onClick={() => { setLimit(val); debounceFetch(null, { limit: val }); }}
                         className={clsx(
                           "flex-1 py-2 rounded-lg text-sm font-bold transition-all border",
                           limit === val 
@@ -179,7 +199,7 @@ export default function GameDashboard() {
                   <DatePicker
                     locale="zh-TW"
                     selected={parseStrDate(startMonth)}
-                    onChange={(date) => { const v = formatStrDate(date); setStartMonth(v); fetchData(null, { startMonth: v }); }}
+                    onChange={(date) => { const v = formatStrDate(date); setStartMonth(v); debounceFetch(null, { startMonth: v }); }}
                     dateFormat="yyyy-MM" showMonthYearPicker placeholderText="選擇年份及月份"
                     className="w-full xl:w-40 bg-slate-900 border border-slate-700 text-white px-4 py-2 rounded-lg font-mono text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-colors"
                   />
@@ -189,7 +209,7 @@ export default function GameDashboard() {
                   <DatePicker
                     locale="zh-TW"
                     selected={parseStrDate(endMonth)}
-                    onChange={(date) => { const v = formatStrDate(date); setEndMonth(v); fetchData(null, { endMonth: v }); }}
+                    onChange={(date) => { const v = formatStrDate(date); setEndMonth(v); debounceFetch(null, { endMonth: v }); }}
                     dateFormat="yyyy-MM" showMonthYearPicker placeholderText="選擇年份及月份"
                     className="w-full xl:w-40 bg-slate-900 border border-slate-700 text-white px-4 py-2 rounded-lg font-mono text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-colors"
                   />
@@ -295,12 +315,12 @@ function StatsTab({ data }) {
 }
 
 function ChartBlock({ title, distribution, sortBy, isSpecial }) {
-  const chartData = [...distribution].sort((a, b) => {
-    if (sortBy === 'num') return a.num - b.num;
-    return b.count - a.count;
-  });
+  const chartData = useMemo(() =>
+    [...distribution].sort((a, b) => sortBy === 'num' ? a.num - b.num : b.count - a.count),
+    [distribution, sortBy]
+  );
 
-  const option = {
+  const option = useMemo(() => ({
     backgroundColor: 'transparent',
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
     grid: { left: '3%', right: '4%', bottom: '15%', containLabel: true },
@@ -340,7 +360,7 @@ function ChartBlock({ title, distribution, sortBy, isSpecial }) {
       { type: 'inside', start: 0, end: 100 },
       { start: 0, end: 100 }
     ],
-  };
+  }), [chartData, isSpecial]);
 
   return (
     <div className="mb-12">
@@ -627,18 +647,6 @@ function HistoryTab({ gameId }) {
   const [searchStart, setSearchStart] = useState('');
   const [searchEnd, setSearchEnd] = useState('');
 
-  const parseStrDate = (str) => {
-    if (!str) return null;
-    const [y, m] = str.split('-');
-    return new Date(y, m - 1);
-  };
-  const formatStrDate = (date) => {
-    if (!date) return '';
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    return `${y}-${m}`;
-  };
-
   const fetchHistory = (start = '', end = '') => {
     setLoading(true);
     setError(false);
@@ -775,18 +783,6 @@ function DuplicateCheckTab({ gameId, data }) {
   const [matches, setMatches] = useState(null);
   const [loading, setLoading] = useState(false);
   const [totalChecked, setTotalChecked] = useState(0);
-
-  const parseStrDate = (str) => {
-    if (!str) return null;
-    const [y, m] = str.split('-');
-    return new Date(y, m - 1);
-  };
-  const formatStrDate = (date) => {
-    if (!date) return '';
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    return `${y}-${m}`;
-  };
 
   const handleSearch = () => {
     if (selectedNums.length === 0 && !selectedSpecial) return;

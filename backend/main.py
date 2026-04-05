@@ -1,14 +1,16 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
 from datetime import datetime
 from collections import Counter
+import asyncio
 import random
 import time
 
 # 簡易 in-memory 快取，避免重複呼叫台灣彩券外部 API
 _cache: dict = {}
+_inflight: dict = {}  # 進行中的請求，避免同 key 重複打外部 API
 CACHE_TTL = 300  # 快取 5 分鐘
 
 app = FastAPI(title="Taiwan Lottery Situation Room API")
@@ -57,48 +59,62 @@ async def fetch_historical_draws(game_id: str, limit: int = 100, start_month: st
     if start_month < ten_years_ago:
         start_month = ten_years_ago
 
-    # 檢查快取，命中則直接回傳
-    cache_key = (game_id, limit, start_month, end_month)
+    # Cache key 不含 limit，同一日期範圍共用快取
+    cache_key = (game_id, start_month, end_month)
     now_ts = time.time()
     if cache_key in _cache:
         cached_time, cached_data = _cache[cache_key]
         if now_ts - cached_time < CACHE_TTL:
-            return cached_data
+            return cached_data[:limit]
+
+    # 若相同 key 的請求已在進行中，等待其完成再從快取讀取（避免 race condition 重複打外部 API）
+    if cache_key in _inflight:
+        await _inflight[cache_key].wait()
+        if cache_key in _cache:
+            return _cache[cache_key][1][:limit]
+        return []
+
+    event = asyncio.Event()
+    _inflight[cache_key] = event
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     all_docs = []
     page_num = 1
 
-    async with httpx.AsyncClient(verify=False, headers=headers) as client:
-        while True:
-            params = {
-                "period": "",
-                "month": start_month,
-                "endMonth": end_month,
-                "pageNum": page_num,
-                "pageSize": 5000
-            }
-            try:
-                resp = await client.get(url, params=params)
-                data = resp.json()
-                res_content = data.get('content', {})
-                list_docs = res_content.get('daily539Res', []) if game_id == 'daily539' else res_content.get('lotto649Res', []) if game_id == 'lotto649' else res_content.get('superLotto638Res', [])
-                all_docs.extend(list_docs)
-                # 若這一頁不足 1000 筆，代表已是最後一頁；若已達 limit 也停止
-                if len(list_docs) < 5000 or len(all_docs) >= limit:
+    try:
+        async with httpx.AsyncClient(verify=True, headers=headers) as client:
+            while True:
+                params = {
+                    "period": "",
+                    "month": start_month,
+                    "endMonth": end_month,
+                    "pageNum": page_num,
+                    "pageSize": 5000
+                }
+                try:
+                    resp = await client.get(url, params=params)
+                    data = resp.json()
+                    res_content = data.get('content', {})
+                    list_docs = res_content.get('daily539Res', []) if game_id == 'daily539' else res_content.get('lotto649Res', []) if game_id == 'lotto649' else res_content.get('superLotto638Res', [])
+                    all_docs.extend(list_docs)
+                    # 若這一頁不足 5000 筆，代表已是最後一頁
+                    if len(list_docs) < 5000:
+                        break
+                    page_num += 1
+                except Exception as e:
+                    print(f"Error fetching data (page {page_num}): {e}")
                     break
-                page_num += 1
-            except Exception as e:
-                print(f"Error fetching data (page {page_num}): {e}")
-                break
 
-    result = all_docs[:limit]
-    # 寫入快取（限制大小避免記憶體洩漏）
-    if len(_cache) >= 100:
-        oldest_key = min(_cache, key=lambda k: _cache[k][0])
-        del _cache[oldest_key]
-    _cache[cache_key] = (now_ts, result)
-    return result
+        # 快取完整資料集（不加 limit），不同 limit 的呼叫可共用同一份快取
+        if len(_cache) >= 100:
+            oldest_key = min(_cache, key=lambda k: _cache[k][0])
+            del _cache[oldest_key]
+        _cache[cache_key] = (time.time(), all_docs)
+    finally:
+        _inflight.pop(cache_key, None)
+        event.set()
+
+    return all_docs[:limit]
 
 def calculate_hot_cold_and_consecutive(draws: list, config: dict):
     """
@@ -143,13 +159,14 @@ def calculate_hot_cold_and_consecutive(draws: list, config: dict):
 
 @app.get("/api/ai_recommend/{game_id}")
 async def ai_recommend(
-    game_id: str, 
-    exclude: str = "", 
-    exclude_special: str = "", 
+    game_id: str,
+    exclude: str = "",
+    exclude_special: str = "",
     ratio: str = "ALL",
     limit: int = 100,
     start_month: str = "",
-    end_month: str = ""
+    end_month: str = "",
+    response: Response = None
 ):
     config = GAME_CONFIGS.get(game_id)
     if not config:
@@ -198,7 +215,9 @@ async def ai_recommend(
     reason_text = f"基於過去數據分析，連號機率為 {consec_prob}%。演算法根據冷熱頻次分配抽樣權重，推薦這組高機率組合。"
     if exclude or exclude_special or ratio != 'ALL':
         reason_text += " (已套用您指定的客製化篩選條件與奇偶數過濾邏輯)"
-        
+
+    if response:
+        response.headers["Cache-Control"] = "public, max-age=300"
     return {
         "game": config["name"],
         "drawn_from_total": len(draws),
@@ -217,7 +236,7 @@ async def ai_recommend(
     }
 
 @app.get("/api/history/{game_id}")
-async def get_history(game_id: str, start_month: str = "", end_month: str = ""):
+async def get_history(game_id: str, start_month: str = "", end_month: str = "", response: Response = None):
     config = GAME_CONFIGS.get(game_id)
     if not config:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -250,6 +269,8 @@ async def get_history(game_id: str, start_month: str = "", end_month: str = ""):
             "evenCount": even_count
         })
         
+    if response:
+        response.headers["Cache-Control"] = "public, max-age=300"
     return {
         "game": config["name"],
         "has_special": config.get('has_special', False),
@@ -257,7 +278,7 @@ async def get_history(game_id: str, start_month: str = "", end_month: str = ""):
     }
 
 @app.get("/api/check_duplicate/{game_id}")
-async def check_duplicate(game_id: str, nums: str = "", special: str = "", start_month: str = "2010-01", end_month: str = ""):
+async def check_duplicate(game_id: str, nums: str = "", special: str = "", start_month: str = "2010-01", end_month: str = "", response: Response = None):
     config = GAME_CONFIGS.get(game_id)
     if not config:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -305,6 +326,8 @@ async def check_duplicate(game_id: str, nums: str = "", special: str = "", start
                 "special": sp
             })
             
+    if response:
+        response.headers["Cache-Control"] = "public, max-age=300"
     return {
         "game": config["name"],
         "total_checked": len(draws),
@@ -312,7 +335,7 @@ async def check_duplicate(game_id: str, nums: str = "", special: str = "", start
     }
 
 @app.get("/api/pattern_analysis/{game_id}")
-async def pattern_analysis(game_id: str, limit: int = 50):
+async def pattern_analysis(game_id: str, limit: int = 50, response: Response = None):
     config = GAME_CONFIGS.get(game_id)
     if not config:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -323,6 +346,8 @@ async def pattern_analysis(game_id: str, limit: int = 50):
     if pattern_cache_key in _cache:
         cached_time, cached_data = _cache[pattern_cache_key]
         if now_ts - cached_time < CACHE_TTL:
+            if response:
+                response.headers["Cache-Control"] = "public, max-age=300"
             return cached_data
 
     # Fetch recent data based on limit. Empty start_month defaults to 1 year back, sufficient for limit up to 200+
@@ -342,36 +367,33 @@ async def pattern_analysis(game_id: str, limit: int = 50):
         clean_draws.append(main_nums)
         
     patterns = []
-    max_num = config['max_num']
-    
-    # Scan intervals 1 to 4 (Next draw to Skip-3 draws)
+    min_appear = 2 if limit <= 100 else 3
+
+    # 以共現矩陣取代雙層 numA 迴圈：O(intervals×draws×draw_count²) vs 原本的 O(intervals×max_num×draws×draw_count)
     for interval in range(1, 5):
-        for numA in range(1, max_num + 1):
-            valid_appearances = 0
-            subsequent_counts = Counter()
-            
-            for i in range(interval, len(clean_draws)):
-                if numA in clean_draws[i]:
-                    valid_appearances += 1
-                    future_draw = clean_draws[i - interval]
-                    for numB in future_draw:
-                        subsequent_counts[numB] += 1
-            
-            # Since user wants short term streaks, lower min_appear depending on limit.
-            min_appear = 2 if limit <= 100 else 3
-            
-            if valid_appearances >= min_appear:
-                for numB, b_count in subsequent_counts.items():
-                    hit_rate = b_count / valid_appearances
-                    if hit_rate >= 0.5:  # lowered to 50% minimum to show viable short-term targets
-                        patterns.append({
-                            "trigger": numA,
-                            "target": numB,
-                            "interval": interval,
-                            "appearances": valid_appearances,
-                            "hits": b_count,
-                            "probability": round(hit_rate * 100, 1)
-                        })
+        appearances: Counter = Counter()   # appearances[a] = a 在 draw[i] 出現的次數
+        co_occur: Counter = Counter()      # co_occur[(a,b)] = a 在 draw[i] 且 b 在 draw[i-interval] 的次數
+
+        for i in range(interval, len(clean_draws)):
+            for numA in clean_draws[i]:
+                appearances[numA] += 1
+                for numB in clean_draws[i - interval]:
+                    co_occur[(numA, numB)] += 1
+
+        for (numA, numB), b_count in co_occur.items():
+            valid_appearances = appearances[numA]
+            if valid_appearances < min_appear:
+                continue
+            hit_rate = b_count / valid_appearances
+            if hit_rate >= 0.5:
+                patterns.append({
+                    "trigger": numA,
+                    "target": numB,
+                    "interval": interval,
+                    "appearances": valid_appearances,
+                    "hits": b_count,
+                    "probability": round(hit_rate * 100, 1)
+                })
                         
     # Sort patterns by probability descending, then by sample size (valid_appearances)
     patterns.sort(key=lambda x: (x['probability'], x['appearances']), reverse=True)
@@ -387,6 +409,8 @@ async def pattern_analysis(game_id: str, limit: int = 50):
         oldest_key = min(_cache, key=lambda k: _cache[k][0])
         del _cache[oldest_key]
     _cache[pattern_cache_key] = (now_ts, result)
+    if response:
+        response.headers["Cache-Control"] = "public, max-age=300"
     return result
 
 if __name__ == "__main__":
