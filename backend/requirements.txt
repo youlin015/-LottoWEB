@@ -1,4 +1,10 @@
 fastapi
 uvicorn
-pydantic
+pydantic[email]
 httpx
+asyncpg
+sqlalchemy[asyncio]
+python-jose[cryptography]
+bcrypt
+python-multipart
+python-dotenv

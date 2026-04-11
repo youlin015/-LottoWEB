@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+﻿import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { motion, AnimatePresence } from 'framer-motion';
 import ReactECharts from 'echarts-for-react';
 import clsx from 'clsx';
@@ -41,6 +42,7 @@ const QUICK_GAMES = [
 export default function GameDashboard() {
   const { gameId } = useParams();
   const navigate = useNavigate();
+  const { user, authFetch } = useAuth();
   const [activeTab, setActiveTab] = useState('stats');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -53,6 +55,7 @@ export default function GameDashboard() {
   const abortRef = useRef(null);
   const debounceRef = useRef(null);
   const retryTimerRef = useRef(null);
+  const shouldSaveRef = useRef(false); // 控制是否在下次 API 回應後自動儲存推薦
 
   const fetchData = (filters = null, overrides = {}, _retryCount = 0) => {
     // 取消任何待重試的計時器及尚未完成的請求
@@ -82,6 +85,7 @@ export default function GameDashboard() {
        if(filters.excludeSpecialNums?.length) params.append('exclude_special', filters.excludeSpecialNums.join(','));
        if(filters.oddEvenRatio && filters.oddEvenRatio !== 'ALL') params.append('ratio', filters.oddEvenRatio);
     }
+    params.append('_t', Date.now()); // 確保每次請求 URL 唯一，繞過瀏覽器快取
     url += `?${params.toString()}`;
 
     fetch(url, { signal: controller.signal })
@@ -96,6 +100,25 @@ export default function GameDashboard() {
         setWaking(false);
         setLoading(false);
         if(filters) setActiveTab('ai'); // Switch to AI tab after filtering
+        // 若為用戶主動觸發（套用篩選 / 重新推薦）且已登入，自動儲存推薦紀錄
+        if (shouldSaveRef.current && user) {
+          shouldSaveRef.current = false;
+          const hasSpec = d.has_special;
+          const allNums = d.recommendation || [];
+          const mainNums = hasSpec ? allNums.slice(0, -1) : allNums;
+          const spNum = hasSpec ? allNums[allNums.length - 1] : null;
+          authFetch(`/api/user/recommendations/${gameId}`, {
+            method: 'POST',
+            body: JSON.stringify({
+              numbers: mainNums,
+              special: spNum,
+              exclude_nums: filters?.excludeNums || [],
+              exclude_sp: filters?.excludeSpecialNums || [],
+              ratio: filters?.oddEvenRatio || 'ALL',
+              limit_used: effectiveLimit,
+            }),
+          }).catch(() => {}); // 靜默失敗，不影響 UI
+        }
       })
       .catch(err => {
         if (err.name === 'AbortError') return; // 被新請求取消，忽略
@@ -236,7 +259,7 @@ export default function GameDashboard() {
 
       {/* Tabs Menu */}
       <div className="flex gap-2 mb-6 border-b border-slate-700/50 pb-2 overflow-x-auto">
-        {TABS.map(tab => (
+        {[...TABS, ...(user ? [{ id: 'my_records', label: '📋 我的紀錄' }] : [])].map(tab => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
@@ -284,11 +307,12 @@ export default function GameDashboard() {
         ) : (
           <AnimatePresence mode="wait">
             {activeTab === 'stats' && data && <StatsTab key="stats" data={data} />}
-            {activeTab === 'ai' && data && <AITab key="ai" data={data} onRefresh={() => fetchData(null)} gameId={gameId} />}
-            {activeTab === 'filter' && data && <FilterTab key={`filter-${gameId}`} data={data} onApply={fetchData} />}
+            {activeTab === 'ai' && data && <AITab key="ai" data={data} onRefresh={() => { shouldSaveRef.current = true; fetchData(null); }} gameId={gameId} />}
+            {activeTab === 'filter' && data && <FilterTab key={`filter-${gameId}`} data={data} onApply={(f) => { shouldSaveRef.current = true; fetchData(f); }} user={user} authFetch={authFetch} gameId={gameId} />}
             {activeTab === 'history' && <HistoryTab key="history" gameId={gameId} />}
             {activeTab === 'duplicate_check' && data && <DuplicateCheckTab key="duplicate_check" gameId={gameId} data={data} />}
             {activeTab === 'pattern' && <PatternTab key="pattern" gameId={gameId} />}
+            {activeTab === 'my_records' && user && <MyRecordsTab key="my_records" authFetch={authFetch} />}
           </AnimatePresence>
         )}
       </div>
@@ -550,11 +574,29 @@ function AITab({ data, onRefresh, gameId }) {
   );
 }
 
-function FilterTab({ data, onApply }) {
+function FilterTab({ data, onApply, user, authFetch, gameId }) {
   const [excludeNums, setExcludeNums] = useState([]);
   const [excludeSpecialNums, setExcludeSpecialNums] = useState([]);
-  const [oddEvenRatio, setOddEvenRatio] = useState('ALL'); // ALL, ODD, EVEN, MIX
+  const [oddEvenRatio, setOddEvenRatio] = useState('ALL');
   const [validationError, setValidationError] = useState('');
+  const [savingPref, setSavingPref] = useState(false);
+  const [prefMsg, setPrefMsg] = useState('');
+
+  // 登入用戶開啟此 Tab 時，自動載入上次儲存的偏好設定
+  useEffect(() => {
+    if (!user || !authFetch || !gameId) return;
+    authFetch(`/api/user/preferences/${gameId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(pref => {
+        if (!pref) return;
+        setExcludeNums(pref.exclude_nums || []);
+        setExcludeSpecialNums(pref.exclude_sp || []);
+        setOddEvenRatio(pref.ratio || 'ALL');
+        setPrefMsg('✅ 已自動載入上次儲存的偏好設定');
+        setTimeout(() => setPrefMsg(''), 3000);
+      })
+      .catch(() => {});
+  }, [gameId, user?.id]);
 
   const toggleExclude = (num, isSpecial = false) => {
     if (isSpecial) {
@@ -574,6 +616,23 @@ function FilterTab({ data, onApply }) {
     }
     setValidationError('');
     onApply({ excludeNums, excludeSpecialNums, oddEvenRatio });
+  };
+
+  const handleSavePref = async () => {
+    if (!authFetch || !gameId) return;
+    setSavingPref(true);
+    try {
+      await authFetch(`/api/user/preferences/${gameId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ exclude_nums: excludeNums, exclude_sp: excludeSpecialNums, ratio: oddEvenRatio }),
+      });
+      setPrefMsg('✅ 設定已儲存！');
+    } catch {
+      setPrefMsg('❌ 儲存失敗，請稍後再試');
+    } finally {
+      setSavingPref(false);
+      setTimeout(() => setPrefMsg(''), 3000);
+    }
   };
 
   return (
@@ -650,6 +709,18 @@ function FilterTab({ data, onApply }) {
             >
               套用篩選並重新運算 ✨
             </button>
+            {user && (
+              <div className="flex flex-col items-end gap-1">
+                {prefMsg && <p className="text-sm font-medium text-cyan-400">{prefMsg}</p>}
+                <button
+                  onClick={handleSavePref}
+                  disabled={savingPref}
+                  className="text-sm px-6 py-2 rounded-xl border border-slate-600 bg-slate-800 hover:bg-slate-700 text-slate-300 transition-all disabled:opacity-50"
+                >
+                  {savingPref ? '儲存中...' : '💾 儲存此篩選設定'}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1069,6 +1140,119 @@ function PatternTab({ gameId }) {
                   在近 <strong>{data.analyzed_draws}</strong> 期的歷史中，當開出 {p.trigger} 之後，有 <strong className="text-white text-base">{p.appearances}</strong> 次滿足指定期數。其中高達 <strong className={p.probability === 100 ? 'text-yellow-400 text-lg' : 'text-cyan-400 text-lg'}>{p.hits}</strong> 次如期開出了 <strong>{p.target}</strong>！
                 </div>
              </div>
+          ))}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+// ======================== 我的紀錄 Tab ======================== //
+
+const GAME_NAMES = { lotto638: '威力彩', lotto649: '大樂透', daily539: '今彩539' };
+
+function MyRecordsTab({ authFetch }) {
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [gameFilter, setGameFilter] = useState('all');
+
+  const fetchRecords = (gf) => {
+    setLoading(true);
+    const qs = gf !== 'all' ? `?game_id=${gf}&limit=100` : '?limit=100';
+    authFetch(`/api/user/recommendations${qs}`)
+      .then(r => r.json())
+      .then(data => { setRecords(Array.isArray(data) ? data : []); setLoading(false); })
+      .catch(() => setLoading(false));
+  };
+
+  useEffect(() => { fetchRecords(gameFilter); }, [gameFilter]);
+
+  const formatDate = (iso) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="h-full overflow-y-auto pr-4 pb-12 w-full">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
+        <div>
+          <h3 className="text-2xl font-bold text-cyan-400">📋 我的 AI 推薦紀錄</h3>
+          <p className="text-slate-400 text-sm mt-1">每次點擊「套用篩選」或「重新推薦」後，系統會自動儲存一筆紀錄。</p>
+        </div>
+        <div className="flex gap-2">
+          {['all', 'lotto638', 'lotto649', 'daily539'].map(g => (
+            <button
+              key={g}
+              onClick={() => setGameFilter(g)}
+              className={clsx(
+                'px-4 py-2 rounded-lg text-sm font-bold transition-all border',
+                gameFilter === g
+                  ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500'
+                  : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-cyan-500/50'
+              )}
+            >
+              {g === 'all' ? '全部' : GAME_NAMES[g]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex justify-center py-20">
+          <div className="w-12 h-12 border-4 border-slate-700 border-t-cyan-400 rounded-full animate-spin" />
+        </div>
+      ) : records.length === 0 ? (
+        <div className="text-center py-20 text-slate-500 bg-slate-800/40 rounded-2xl border border-dashed border-slate-700">
+          <div className="text-4xl mb-3">📭</div>
+          <p className="font-medium">尚無推薦紀錄</p>
+          <p className="text-xs mt-1">套用篩選或重新推薦後，紀錄會自動出現在這裡</p>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {records.map((rec, i) => (
+            <div key={rec.id || i} className="bg-slate-800/60 border border-white/5 rounded-2xl p-5 hover:border-cyan-500/20 transition-all">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                <div className="flex items-center gap-3">
+                  <span className={clsx(
+                    'px-3 py-1 rounded-full text-xs font-bold',
+                    rec.game_id === 'lotto638' ? 'bg-rose-500/20 text-rose-400' :
+                    rec.game_id === 'lotto649' ? 'bg-amber-500/20 text-amber-400' :
+                    'bg-sky-500/20 text-sky-400'
+                  )}>
+                    {GAME_NAMES[rec.game_id] || rec.game_id}
+                  </span>
+                  {rec.ratio !== 'ALL' && (
+                    <span className="text-xs text-slate-500 border border-slate-700 px-2 py-0.5 rounded-full">
+                      {rec.ratio === 'ODD' ? '偏奇數' : '偏偶數'}
+                    </span>
+                  )}
+                </div>
+                <span className="text-slate-500 text-xs font-mono">{formatDate(rec.created_at)}</span>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                {rec.numbers.map(n => (
+                  <span key={n} className="w-10 h-10 rounded-full bg-gradient-to-br from-yellow-400 to-orange-500 text-slate-900 flex items-center justify-center font-black text-sm shadow-[0_0_10px_rgba(245,158,11,0.3)]">
+                    {String(n).padStart(2, '0')}
+                  </span>
+                ))}
+                {rec.special !== null && rec.special !== undefined && (
+                  <>
+                    <span className="text-rose-500/60 font-black text-2xl">+</span>
+                    <span className="w-10 h-10 rounded-full bg-gradient-to-br from-rose-500 to-rose-700 text-white flex items-center justify-center font-black text-sm shadow-[0_0_10px_rgba(225,29,72,0.4)]">
+                      {String(rec.special).padStart(2, '0')}
+                    </span>
+                  </>
+                )}
+              </div>
+              {rec.exclude_nums?.length > 0 && (
+                <div className="mt-3">
+                  <span className="text-xs text-slate-500">
+                    已排除：{rec.exclude_nums.map(n => String(n).padStart(2,'0')).join(', ')}
+                  </span>
+                </div>
+              )}
+            </div>
           ))}
         </div>
       )}

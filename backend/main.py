@@ -1,4 +1,9 @@
-from fastapi import FastAPI, HTTPException, Response
+from dotenv import load_dotenv
+load_dotenv()  # 載入 backend/.env，必須在其他 import 之前
+
+from contextlib import asynccontextmanager
+from typing import Optional
+from fastapi import FastAPI, HTTPException, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
@@ -6,14 +11,35 @@ from datetime import datetime
 from collections import Counter
 import asyncio
 import random
+import math
 import time
+
+import database
+import models
+import auth as auth_utils
+from database import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, desc
+from routers.auth_router import router as auth_router
+from routers.user_router import router as user_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """啟動時建立 DB 資料表；關閉時釋放連線池"""
+    await database.init_db()
+    yield
+    await database.engine.dispose()
 
 # 簡易 in-memory 快取，避免重複呼叫台灣彩券外部 API
 _cache: dict = {}
 _inflight: dict = {}  # 進行中的請求，避免同 key 重複打外部 API
 CACHE_TTL = 300  # 快取 5 分鐘
 
-app = FastAPI(title="Taiwan Lottery Situation Room API")
+app = FastAPI(title="Taiwan Lottery Situation Room API", lifespan=lifespan)
+
+app.include_router(auth_router)
+app.include_router(user_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -165,6 +191,80 @@ def calculate_hot_cold_and_consecutive(draws: list, config: dict):
     consec_prob = round((consecutive_counts / total_draws) * 100, 2) if total_draws else 0
     return freq_map, special_freq_map, consec_prob
 
+def calculate_gaps(draws: list, config: dict) -> dict:
+    """每個號碼距今多少期未出現（gap 越大 = 越久沒出現）"""
+    last_seen: dict = {}
+    for i, draw in enumerate(draws):  # draws[0] = 最新一期
+        nums = draw.get('drawNumberSize', [])
+        if not nums:
+            continue
+        real_nums = [int(n) for n in nums]
+        if config.get('has_special') and len(real_nums) > config['draw_count']:
+            main_nums = real_nums[:-1]
+        else:
+            main_nums = real_nums[:config['draw_count']]
+        for n in main_nums:
+            if n not in last_seen:
+                last_seen[n] = i  # 第一次出現即為最近一次
+    total = len(draws)
+    return {n: last_seen.get(n, total) for n in range(1, config['max_num'] + 1)}
+
+
+def softmax_weights(values: list, temperature: float = 1.0) -> list:
+    """
+    Temperature Softmax：先正規化到 0~1 再套用 softmax，攤平熱號獨大。
+    temperature=1.0 → 冷熱差距約 2.7 倍；temperature=0.5 → 約 7 倍；
+    temperature=2.0 → 約 1.6 倍（接近均勻）。
+    """
+    if not values:
+        return []
+    min_v, max_v = min(values), max(values)
+    if max_v == min_v:
+        return [1.0] * len(values)
+    norm = [(v - min_v) / (max_v - min_v) for v in values]   # 正規化 0~1
+    exp_vals = [math.exp(n / temperature) for n in norm]
+    total = sum(exp_vals)
+    scale = len(values)   # 平均值 ≈ 1，與 gap bonus 量級一致
+    return [e / total * scale for e in exp_vals]
+
+
+def segment_aware_pick(numbers: list, weights: list, draw_count: int, max_num: int) -> list:
+    """
+    號碼分區平衡選號（低/中/高三段）。
+    軟約束：當剩餘抽選次數 == 尚未出現的分區數時，強制從空白分區挑選。
+    """
+    third = max_num // 3
+
+    def get_seg(n: int) -> int:
+        if n <= third: return 0
+        if n <= 2 * third: return 1
+        return 2
+
+    result: list = []
+    seg_counts = [0, 0, 0]
+    nums = numbers[:]
+    ws = weights[:]
+
+    for pick_idx in range(draw_count):
+        remaining = draw_count - pick_idx
+        empty_segs = sum(1 for c in seg_counts if c == 0)
+
+        adj = []
+        for n, w in zip(nums, ws):
+            if seg_counts[get_seg(n)] == 0 and remaining <= empty_segs:
+                adj.append(w * 8)   # 強制補齊空白分區
+            else:
+                adj.append(w)
+
+        idx = random.choices(range(len(nums)), weights=adj, k=1)[0]
+        picked = nums.pop(idx)
+        ws.pop(idx)
+        seg_counts[get_seg(picked)] += 1
+        result.append(picked)
+
+    return result
+
+
 @app.get("/api/ai_recommend/{game_id}")
 async def ai_recommend(
     game_id: str,
@@ -174,7 +274,9 @@ async def ai_recommend(
     limit: int = 100,
     start_month: str = "",
     end_month: str = "",
-    response: Response = None
+    response: Response = None,
+    current_user: Optional[models.User] = Depends(auth_utils.get_optional_user),
+    db: AsyncSession = Depends(get_db),
 ):
     config = GAME_CONFIGS.get(game_id)
     if not config:
@@ -184,48 +286,74 @@ async def ai_recommend(
 
     if not draws:
         raise HTTPException(status_code=503, detail="無法取得彩券開獎資料，請稍後再試")
-            
+
     freq_map, special_freq_map, consec_prob = calculate_hot_cold_and_consecutive(draws, config)
-    
-    # Process exclusions
+    gap_map = calculate_gaps(draws, config)
+
     exclude_list = [int(x) for x in exclude.split(',')] if exclude else []
     exclude_special_list = [int(x) for x in exclude_special.split(',')] if exclude_special else []
-    
+
+    # ── 方法五：取得登入用戶近 20 筆推薦組合，用來排除重複 ──────────────
+    recent_combos: set = set()
+    if current_user:
+        q = (select(models.Recommendation)
+             .where(models.Recommendation.user_id == current_user.id,
+                    models.Recommendation.game_id == game_id)
+             .order_by(desc(models.Recommendation.created_at))
+             .limit(20))
+        rows = await db.execute(q)
+        for rec in rows.scalars().all():
+            recent_combos.add(frozenset(rec.numbers))
+
     numbers = [n for n in freq_map.keys() if n not in exclude_list]
-    weights = [freq_map[n] + 1 for n in numbers]
-    
-    # Process Odd/Even Ratio Bias
+
+    # ── 方法一：Softmax 溫度採樣（攤平熱號獨大問題）────────────────────
+    raw_freqs = [freq_map[n] + 1 for n in numbers]
+    sm_weights = softmax_weights(raw_freqs, temperature=1.5)
+
+    # ── 方法二：Gap bonus 混合（久未出現號碼加權 0~30%）────────────────
+    gap_vals = [gap_map.get(n, 0) for n in numbers]
+    max_gap = max(gap_vals) if gap_vals else 1
+    norm_gap = [g / (max_gap + 1) for g in gap_vals]   # normalize 到 0~1
+    combined = [sm * (1.0 + ng * 0.3) for sm, ng in zip(sm_weights, norm_gap)]
+
+    # ── 奇偶比例偏置 ─────────────────────────────────────────────────
     if ratio == 'ODD':
-        weights = [w * 3 if n % 2 != 0 else w for n, w in zip(numbers, weights)]
+        combined = [w * 3 if n % 2 != 0 else w for n, w in zip(numbers, combined)]
     elif ratio == 'EVEN':
-        weights = [w * 3 if n % 2 == 0 else w for n, w in zip(numbers, weights)]
-    
-    recommended = []
-    available_nums = numbers.copy()
-    available_w = weights.copy()
-    
-    for _ in range(config['draw_count']):
-        idx = random.choices(range(len(available_nums)), weights=available_w, k=1)[0]
-        selected = available_nums.pop(idx)
-        available_w.pop(idx)
-        recommended.append(selected)
-        
-    recommended.sort()
-    
+        combined = [w * 3 if n % 2 == 0 else w for n, w in zip(numbers, combined)]
+
+    # ── 方法三 + 方法五：分區平衡選號，登入用戶最多重試 10 次避免重複 ──
+    max_attempts = 10 if current_user else 1
+    recommended: list = []
+
+    for _ in range(max_attempts):
+        picked = segment_aware_pick(numbers, combined, config['draw_count'], config['max_num'])
+        if frozenset(picked) not in recent_combos:
+            recommended = sorted(picked)
+            break
+    else:
+        recommended = sorted(picked)   # 全部嘗試都碰撞時仍回傳最後一組
+
     if config.get('has_special'):
         sp_nums = [n for n in special_freq_map.keys() if n not in exclude_special_list]
-        if not sp_nums: # Failsafe
+        if not sp_nums:
             sp_nums = list(special_freq_map.keys())
         sp_weights = [special_freq_map[n] + 1 for n in sp_nums]
-        special_recommendation = random.choices(sp_nums, weights=sp_weights, k=1)[0]
-        recommended.append(special_recommendation)  # 最後一顆放到陣列最後
-    
-    reason_text = f"基於過去數據分析，連號機率為 {consec_prob}%。演算法根據冷熱頻次分配抽樣權重，推薦這組高機率組合。"
+        recommended.append(random.choices(sp_nums, weights=sp_weights, k=1)[0])
+
+    algo_tags = ["Softmax 溫度採樣", "Gap 久未出現加分", "號碼分區平衡"]
+    reason_text = (
+        f"基於過去 {len(draws)} 期資料，連號機率 {consec_prob}%。"
+        f"融合演算法（{'、'.join(algo_tags)}）產生高多樣性組合。"
+    )
     if exclude or exclude_special or ratio != 'ALL':
-        reason_text += " (已套用您指定的客製化篩選條件與奇偶數過濾邏輯)"
+        reason_text += " ｜ 已套用自訂篩選條件。"
+    if current_user:
+        reason_text += " ｜ ✓ 已排除您近期推薦過的重複組合。"
 
     if response:
-        response.headers["Cache-Control"] = "public, max-age=300"
+        response.headers["Cache-Control"] = "no-store"   # 每次都要重新計算，不可快取
     return {
         "game": config["name"],
         "drawn_from_total": len(draws),
