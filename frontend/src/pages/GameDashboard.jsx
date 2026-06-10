@@ -48,6 +48,7 @@ export default function GameDashboard() {
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState(false);
   const [waking, setWaking] = useState(false);
+  const [rateLimited, setRateLimited] = useState(false);
   const [limit, setLimit] = useState(100);
   const [startMonth, setStartMonth] = useState('');
   const [endMonth, setEndMonth] = useState('');
@@ -64,7 +65,7 @@ export default function GameDashboard() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    if (_retryCount === 0) { setWaking(false); }
+    if (_retryCount === 0) { setWaking(false); setRateLimited(false); }
     setLoading(true);
     const effectiveLimit = overrides.limit ?? limit;
     const effectiveStart = overrides.startMonth ?? startMonth;
@@ -90,6 +91,11 @@ export default function GameDashboard() {
 
     fetch(url, { signal: controller.signal })
       .then(res => {
+        if (res.status === 429) {
+          const e = new Error('HTTP 429');
+          e.status = 429;
+          throw e;
+        }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
@@ -122,6 +128,14 @@ export default function GameDashboard() {
       })
       .catch(err => {
         if (err.name === 'AbortError') return; // 被新請求取消，忽略
+        // 429 不重試（會被擋更久），直接顯示提示
+        if (err.status === 429) {
+          setRateLimited(true);
+          setWaking(false);
+          setLoading(false);
+          if(filters) setActiveTab('ai');
+          return;
+        }
         // 後端可能 cold start（Render 免費方案閒置後需喚醒），自動重試最多 3 次
         const RETRY_DELAYS = [8000, 16000, 25000]; // 逐步拉長等待時間
         if (_retryCount < RETRY_DELAYS.length) {
@@ -149,6 +163,8 @@ export default function GameDashboard() {
   useEffect(() => {
     setData(null);
     setWaking(false);
+    setApiError(false);
+    setRateLimited(false);
     setActiveTab('stats');
     fetchData(null);
   }, [gameId]);
@@ -285,6 +301,14 @@ export default function GameDashboard() {
         <div className="mb-4 px-4 py-3 bg-amber-900/40 border border-amber-500/50 rounded-xl text-amber-300 text-sm flex items-center gap-3">
           <span className="text-lg shrink-0">⚠️</span>
           <span>後端伺服器連線失敗，以下數據為<strong className="text-amber-200">模擬數據</strong>，僅供介面展示，請勿作為投注參考。</span>
+        </div>
+      )}
+
+      {/* 429：請求過於頻繁 */}
+      {rateLimited && (
+        <div className="mb-4 px-4 py-3 bg-orange-900/40 border border-orange-500/50 rounded-xl text-orange-300 text-sm flex items-center gap-3">
+          <span className="text-lg shrink-0">🚦</span>
+          <span>請求過於頻繁，請<strong className="text-orange-200">稍候 1 分鐘</strong>再試（每分鐘最多 30 次推薦請求）。</span>
         </div>
       )}
 

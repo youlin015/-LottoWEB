@@ -31,7 +31,8 @@ export function AuthProvider({ children }) {
       body: JSON.stringify({ email, password }),
     });
     if (!res.ok) {
-      const err = await res.json();
+      if (res.status === 429) throw new Error('登入嘗試過於頻繁，請稍後再試（每分鐘最多 5 次）');
+      const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || '登入失敗，請稍後再試');
     }
     const data = await res.json();
@@ -46,7 +47,8 @@ export function AuthProvider({ children }) {
       body: JSON.stringify({ email, password, display_name }),
     });
     if (!res.ok) {
-      const err = await res.json();
+      if (res.status === 429) throw new Error('註冊嘗試過於頻繁，請稍後再試（每分鐘最多 5 次）');
+      const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || '註冊失敗，請稍後再試');
     }
     const data = await res.json();

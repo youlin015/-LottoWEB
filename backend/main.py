@@ -3,8 +3,10 @@ load_dotenv()  # 載入 backend/.env，必須在其他 import 之前
 
 from contextlib import asynccontextmanager
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Response, Depends
+import os
+from fastapi import FastAPI, HTTPException, Response, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import httpx
 from datetime import datetime
@@ -14,12 +16,15 @@ import random
 import math
 import time
 
+from slowapi.errors import RateLimitExceeded
+
 import database
 import models
 import auth as auth_utils
 from database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
+from rate_limit import limiter
 from routers.auth_router import router as auth_router
 from routers.user_router import router as user_router
 
@@ -38,14 +43,50 @@ CACHE_TTL = 300  # 快取 5 分鐘
 
 app = FastAPI(title="Taiwan Lottery Situation Room API", lifespan=lifespan)
 
+# CORS 白名單：預設為 Vercel 正式網域與本地 dev，可用 CORS_ORIGINS 環境變數覆寫（逗號分隔）
+_default_origins = [
+    "https://lotto-web-ruddy.vercel.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+_env_origins = os.getenv("CORS_ORIGINS", "")
+ALLOWED_ORIGINS = [o.strip() for o in _env_origins.split(",") if o.strip()] or _default_origins
+print(f"[CORS] Allowed origins: {ALLOWED_ORIGINS}")
+
+
+# Rate Limiter：所有受限端點共用 rate_limit.limiter，超限自動回 429
+app.state.limiter = limiter
+
+
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """
+    自訂 429 handler：FastAPI exception handler 不會經過 CORSMiddleware，
+    必須手動補上 Access-Control-Allow-Origin，否則瀏覽器會把 429 當成 CORS 錯誤，
+    前端 fetch 拿不到正確 status code。
+    """
+    origin = request.headers.get("origin", "")
+    headers = {"Retry-After": "60"}
+    if origin in ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+        headers["Vary"] = "Origin"
+    return JSONResponse(
+        status_code=429,
+        content={"detail": f"請求過於頻繁（{exc.detail}），請稍後再試"},
+        headers=headers,
+    )
+
+
+app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
+
 app.include_router(auth_router)
 app.include_router(user_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -266,7 +307,9 @@ def segment_aware_pick(numbers: list, weights: list, draw_count: int, max_num: i
 
 
 @app.get("/api/ai_recommend/{game_id}")
+@limiter.limit("30/minute")
 async def ai_recommend(
+    request: Request,
     game_id: str,
     exclude: str = "",
     exclude_special: str = "",
@@ -372,7 +415,8 @@ async def ai_recommend(
     }
 
 @app.get("/api/history/{game_id}")
-async def get_history(game_id: str, start_month: str = "", end_month: str = "", response: Response = None):
+@limiter.limit("60/minute")
+async def get_history(request: Request, game_id: str, start_month: str = "", end_month: str = "", response: Response = None):
     config = GAME_CONFIGS.get(game_id)
     if not config:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -414,7 +458,8 @@ async def get_history(game_id: str, start_month: str = "", end_month: str = "", 
     }
 
 @app.get("/api/check_duplicate/{game_id}")
-async def check_duplicate(game_id: str, nums: str = "", special: str = "", start_month: str = "2010-01", end_month: str = "", response: Response = None):
+@limiter.limit("60/minute")
+async def check_duplicate(request: Request, game_id: str, nums: str = "", special: str = "", start_month: str = "2010-01", end_month: str = "", response: Response = None):
     config = GAME_CONFIGS.get(game_id)
     if not config:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -471,7 +516,8 @@ async def check_duplicate(game_id: str, nums: str = "", special: str = "", start
     }
 
 @app.get("/api/pattern_analysis/{game_id}")
-async def pattern_analysis(game_id: str, limit: int = 50, response: Response = None):
+@limiter.limit("60/minute")
+async def pattern_analysis(request: Request, game_id: str, limit: int = 50, response: Response = None):
     config = GAME_CONFIGS.get(game_id)
     if not config:
         raise HTTPException(status_code=404, detail="Game not found")

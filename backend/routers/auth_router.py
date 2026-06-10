@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from database import get_db
+from rate_limit import limiter
 import models
 import schemas
 import auth as auth_utils
@@ -11,7 +12,8 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 @router.post("/register", response_model=schemas.Token)
-async def register(body: schemas.UserRegister, db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def register(request: Request, body: schemas.UserRegister, db: AsyncSession = Depends(get_db)):
     """註冊新帳號；若 Email 已存在回 400"""
     result = await db.execute(
         select(models.User).where(models.User.email == body.email)
@@ -33,7 +35,8 @@ async def register(body: schemas.UserRegister, db: AsyncSession = Depends(get_db
 
 
 @router.post("/login", response_model=schemas.Token)
-async def login(body: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def login(request: Request, body: schemas.UserLogin, db: AsyncSession = Depends(get_db)):
     """以 Email + 密碼登入，成功回傳 JWT"""
     result = await db.execute(
         select(models.User).where(models.User.email == body.email)
