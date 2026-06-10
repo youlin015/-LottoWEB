@@ -366,17 +366,28 @@ async def ai_recommend(
     elif ratio == 'EVEN':
         combined = [w * 3 if n % 2 == 0 else w for n, w in zip(numbers, combined)]
 
-    # ── 方法三 + 方法五：分區平衡選號，登入用戶最多重試 10 次避免重複 ──
-    max_attempts = 10 if current_user else 1
-    recommended: list = []
+    # ── 方法三 + 方法五：分區平衡選號 ─────────────────────────────────
+    # 登入用戶最多重試 10 次避免重複；BALANCED 模式拉到 30 次以找到符合奇偶均衡的組合
+    need_balance = (ratio == 'BALANCED')
+    # 偶數抽幾顆 → 必須 N/N；奇數抽幾顆 → 容差 1（如 5 顆抽 3-2 或 2-3）
+    balance_tolerance = config['draw_count'] % 2
+    max_attempts = 30 if need_balance else (10 if current_user else 1)
 
+    picked: list = []
+    last_balanced: list = []
     for _ in range(max_attempts):
         picked = segment_aware_pick(numbers, combined, config['draw_count'], config['max_num'])
-        if frozenset(picked) not in recent_combos:
-            recommended = sorted(picked)
+        is_balanced = True
+        if need_balance:
+            odd_c = sum(1 for n in picked if n % 2 != 0)
+            even_c = config['draw_count'] - odd_c
+            is_balanced = abs(odd_c - even_c) <= balance_tolerance
+            if is_balanced:
+                last_balanced = picked
+        if is_balanced and frozenset(picked) not in recent_combos:
             break
-    else:
-        recommended = sorted(picked)   # 全部嘗試都碰撞時仍回傳最後一組
+    # 全試完仍沒命中時：優先回最後一組「均衡」的；都沒有就回最後一組普通的
+    recommended = sorted(last_balanced or picked)
 
     if config.get('has_special'):
         sp_nums = [n for n in special_freq_map.keys() if n not in exclude_special_list]

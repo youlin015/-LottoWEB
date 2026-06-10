@@ -721,6 +721,10 @@ function FilterTab({ data, onApply, user, authFetch, gameId }) {
               <input type="radio" name="ratio" checked={oddEvenRatio === 'EVEN'} onChange={() => setOddEvenRatio('EVEN')} className="w-5 h-5 accent-cyan-500" />
               <span>偏重偶數 (偶數占 60% 以上)</span>
              </label>
+             <label className="flex items-center gap-3 p-4 bg-slate-800 rounded-xl border border-slate-700 cursor-pointer hover:bg-slate-700/80 transition">
+              <input type="radio" name="ratio" checked={oddEvenRatio === 'BALANCED'} onChange={() => setOddEvenRatio('BALANCED')} className="w-5 h-5 accent-cyan-500" />
+              <span>奇偶均衡 (奇偶數量盡量相等)</span>
+             </label>
           </div>
 
           <div className="mt-8 flex flex-col items-end gap-2">
@@ -1248,7 +1252,7 @@ function MyRecordsTab({ authFetch }) {
                   </span>
                   {rec.ratio !== 'ALL' && (
                     <span className="text-xs text-slate-500 border border-slate-700 px-2 py-0.5 rounded-full">
-                      {rec.ratio === 'ODD' ? '偏奇數' : '偏偶數'}
+                      {rec.ratio === 'ODD' ? '偏奇數' : rec.ratio === 'EVEN' ? '偏偶數' : '奇偶均衡'}
                     </span>
                   )}
                 </div>
